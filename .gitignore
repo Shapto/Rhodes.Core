@@ -361,3 +361,10 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Closure's data and machine-specific settings never go to GitHub
+*.db
+*.db-wal
+*.db-shm
+backups/
+appsettings.Local.json
