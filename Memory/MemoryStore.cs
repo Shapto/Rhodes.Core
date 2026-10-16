@@ -47,6 +47,11 @@ namespace Rhodes.Core.Memory
     public sealed record MemorySearchHit(MemoryRecord Memory, double KeywordScore);
 
     /// <summary>
+    /// One row of the import breakdown: how many memories share an old category, source and review flag.
+    /// </summary>
+    public sealed record MemoryBreakdownRow(string Category, string Source, bool NeedsReview, long Count);
+
+    /// <summary>
     /// Reads and writes memory.db in place. The khtsly memories table keeps its exact shape;
     /// everything Closure adds lives in closure_* side tables, and no triggers touch memories,
     /// so the old plugin can still open the file if we ever roll back.
@@ -219,7 +224,7 @@ namespace Rhodes.Core.Memory
             lock (databaseLock)
             {
                 using var command = CreateCommand(null,
-                    "SELECT " + MemoryColumns + """
+                    "SELECT " + MemoryColumns + " " + """
                 , bm25(closure_memory_search)
                 FROM closure_memory_search
                 JOIN memories ON memories.id = closure_memory_search.memory_id
@@ -252,13 +257,13 @@ namespace Rhodes.Core.Memory
             lock (databaseLock)
             {
                 using var command = CreateCommand(null,
-                    "SELECT " + MemoryColumns + """
+                "SELECT " + MemoryColumns + " " + """
                 FROM memories
                 JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id
                 ORDER BY memories.created_at DESC
                 LIMIT $limit;
                 """,
-                    ("$limit", limit));
+                ("$limit", limit));
 
                 using var reader = command.ExecuteReader();
                 var memories = new List<MemoryRecord>();
@@ -337,6 +342,32 @@ namespace Rhodes.Core.Memory
             if (tableCount == 0)
             {
                 throw new InvalidOperationException("No memories table in this file. Check that the path points at the khtsly memory.db.");
+            }
+        }
+
+        /// <summary>
+        /// Counts memories per old category, source and review flag, to see what the old plugin left behind.
+        /// </summary>
+        public IReadOnlyList<MemoryBreakdownRow> GetBreakdown()
+        {
+            lock (databaseLock)
+            {
+                using var command = CreateCommand(null, """
+            SELECT memories.category, memories.source, closure_memory_meta.needs_review, COUNT(*)
+            FROM memories
+            JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id
+            GROUP BY memories.category, memories.source, closure_memory_meta.needs_review
+            ORDER BY COUNT(*) DESC;
+            """);
+
+                using var reader = command.ExecuteReader();
+                var breakdownRows = new List<MemoryBreakdownRow>();
+                while (reader.Read())
+                {
+                    breakdownRows.Add(new MemoryBreakdownRow(reader.GetString(0), reader.GetString(1), reader.GetInt64(2) != 0, reader.GetInt64(3)));
+                }
+
+                return breakdownRows;
             }
         }
 
