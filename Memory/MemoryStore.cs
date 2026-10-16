@@ -265,14 +265,7 @@ namespace Rhodes.Core.Memory
                 """,
                 ("$limit", limit));
 
-                using var reader = command.ExecuteReader();
-                var memories = new List<MemoryRecord>();
-                while (reader.Read())
-                {
-                    memories.Add(ReadMemory(reader));
-                }
-
-                return memories;
+                return ReadAllMemories(command);
             }
         }
 
@@ -426,6 +419,18 @@ namespace Rhodes.Core.Memory
                 NeedsReview: reader.GetInt64(13) != 0);
         }
 
+        private static List<MemoryRecord> ReadAllMemories(SqliteCommand command)
+        {
+            using var reader = command.ExecuteReader();
+            var memories = new List<MemoryRecord>();
+            while (reader.Read())
+            {
+                memories.Add(ReadMemory(reader));
+            }
+
+            return memories;
+        }
+
         private static IReadOnlyList<string> ParseTags(string tagsJson)
         {
             try
@@ -457,6 +462,65 @@ namespace Rhodes.Core.Memory
             }
 
             return command;
+        }
+
+        /// <summary>
+        /// Memories flagged on import because their old category didn't map cleanly to a type.
+        /// </summary>
+        public IReadOnlyList<MemoryRecord> GetNeedingReview()
+        {
+            lock (databaseLock)
+            {
+                using var command = CreateCommand(null,
+                    "SELECT " + MemoryColumns + " " + """
+            FROM memories
+            JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id
+            WHERE closure_memory_meta.needs_review = 1
+            ORDER BY memories.category, memories.created_at;
+            """);
+                return ReadAllMemories(command);
+            }
+        }
+
+        /// <summary>
+        /// Memories by the old plugin's category, e.g. "instruction", oldest first.
+        /// </summary>
+        public IReadOnlyList<MemoryRecord> GetByLegacyCategory(string category, int limit)
+        {
+            lock (databaseLock)
+            {
+                using var command = CreateCommand(null,
+                    "SELECT " + MemoryColumns + " " + """
+            FROM memories
+            JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id
+            WHERE memories.category = $category
+            ORDER BY memories.created_at
+            LIMIT $limit;
+            """,
+                    ("$category", category),
+                    ("$limit", limit));
+                return ReadAllMemories(command);
+            }
+        }
+
+        /// <summary>
+        /// Changes a memory's type and clears its review flag. Only the side table changes;
+        /// the original row stays exactly as the old plugin wrote it.
+        /// </summary>
+        public bool SetType(string memoryId, string type)
+        {
+            if (!MemoryTypes.All.Contains(type))
+            {
+                throw new ArgumentException($"Unknown memory type '{type}'.", nameof(type));
+            }
+
+            lock (databaseLock)
+            {
+                var updatedRows = Execute(null, "UPDATE closure_memory_meta SET type = $type, needs_review = 0 WHERE memory_id = $id;",
+                    ("$type", type),
+                    ("$id", memoryId));
+                return updatedRows > 0;
+            }
         }
 
         private int Execute(SqliteTransaction? transaction, string sql, params (string Name, object? Value)[] parameters)
