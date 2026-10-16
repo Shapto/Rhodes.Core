@@ -374,12 +374,13 @@ namespace Rhodes.Core.Memory
                 imported_category  TEXT
             );
             """);
+            Execute(null, "DROP TABLE IF EXISTS closure_memory_search;");
             Execute(null, """
-            CREATE VIRTUAL TABLE IF NOT EXISTS closure_memory_search USING fts5(
+            CREATE VIRTUAL TABLE closure_memory_search USING fts5(
                 memory_id UNINDEXED,
                 content,
                 tags,
-                tokenize = 'unicode61 remove_diacritics 2'
+                tokenize = 'porter unicode61 remove_diacritics 2'
             );
             """);
         }
@@ -391,7 +392,7 @@ namespace Rhodes.Core.Memory
         private static string? BuildMatchExpression(string query)
         {
             var quotedWords = Regex.Matches(query.ToLowerInvariant(), @"[\p{L}\p{N}_]+")
-                .Select(match => match.Value)
+                .Select(word => $"\"{word}\"")
                 .Where(word => word.Length >= 2 && !StopWords.Contains(word))
                 .Distinct()
                 .Take(MaximumQueryWords)
@@ -520,6 +521,18 @@ namespace Rhodes.Core.Memory
                     ("$type", type),
                     ("$id", memoryId));
                 return updatedRows > 0;
+            }
+        }
+
+        /// <summary>
+        /// The highest use count of any memory, so use counts can be scaled against it.
+        /// </summary>
+        public long GetMaximumAccessCount()
+        {
+            lock (databaseLock)
+            {
+                using var command = CreateCommand(null, "SELECT COALESCE(MAX(access_count), 0) FROM memories;");
+                return Convert.ToInt64(command.ExecuteScalar());
             }
         }
 
