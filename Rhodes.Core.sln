@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36915.13 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Rhodes.Core", "Rhodes.Core.csproj", "{7AB234C3-5EC3-4959-BFC3-7C56FE473FBC}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7AB234C3-5EC3-4959-BFC3-7C56FE473FBC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7AB234C3-5EC3-4959-BFC3-7C56FE473FBC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7AB234C3-5EC3-4959-BFC3-7C56FE473FBC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7AB234C3-5EC3-4959-BFC3-7C56FE473FBC}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {318E4F9B-8EEB-4897-A2D6-CDDBBE1114F3}
+	EndGlobalSection
+EndGlobal
