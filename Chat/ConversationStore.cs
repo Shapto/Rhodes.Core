@@ -117,6 +117,42 @@ public sealed class ConversationStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// Deletes stored messages from fromPosition onwards, after the last turn was removed to run it again.
+    /// </summary>
+    public void DeleteMessagesFrom(Conversation conversation, int fromPosition)
+    {
+        var nowMilliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        lock (databaseLock)
+        {
+            using var transaction = connection.BeginTransaction();
+            Execute(transaction, "DELETE FROM conversation_messages WHERE conversation_id = $id AND position >= $fromPosition;",
+                ("$id", conversation.Id),
+                ("$fromPosition", fromPosition));
+            Execute(transaction, "UPDATE conversations SET updated_at = $now, last_user_message_at = $lastUserMessageAt, tool_results_collapsed_before = $toolResultsCollapsedBefore WHERE id = $id;",
+                ("$now", nowMilliseconds),
+                ("$lastUserMessageAt", conversation.LastUserMessageAt?.ToUnixTimeMilliseconds()),
+                ("$toolResultsCollapsedBefore", conversation.ToolResultsCollapsedBefore),
+                ("$id", conversation.Id));
+            transaction.Commit();
+        }
+    }
+
+    /// <summary>
+    /// Deletes a chat and all its messages. Returns false if there was no such chat.
+    /// </summary>
+    public bool Delete(string conversationId)
+    {
+        lock (databaseLock)
+        {
+            using var transaction = connection.BeginTransaction();
+            Execute(transaction, "DELETE FROM conversation_messages WHERE conversation_id = $id;", ("$id", conversationId));
+            var deletedRows = Execute(transaction, "DELETE FROM conversations WHERE id = $id;", ("$id", conversationId));
+            transaction.Commit();
+            return deletedRows > 0;
+        }
+    }
+
     public void SaveTitle(Conversation conversation)
     {
         lock (databaseLock)

@@ -77,18 +77,26 @@ public sealed class ChatLoop
                 await EmitAsync(onEvent, new ChatEvent("attachments", attachmentChips.ToJsonString()));
             }
 
-            var userContent = BuildUserContent(messageText + attachmentText, clientName, now, conversation.LastUserMessageAt, conversation.CreatedAt, injectedMemories);
+            var memoryBlock = BuildMemoryBlock(injectedMemories);
+            var userContent = BuildUserContent(messageText + attachmentText, clientName, now, conversation.LastUserMessageAt, conversation.CreatedAt, memoryBlock);
             conversation.Messages.Add(new JsonObject
             {
                 ["role"] = "user",
                 ["content"] = userContent,
                 ["rhodes_display_text"] = messageText,
                 ["rhodes_attachments"] = attachmentChips,
+                ["rhodes_sent_at"] = now.ToString("o", CultureInfo.InvariantCulture),
+                ["rhodes_memory_characters"] = memoryBlock.Length,
             });
 
             var systemPrompt = await File.ReadAllTextAsync(personaPath, cancellationToken);
             var toolSteps = new List<ToolStep>();
             var reasoningParts = new List<string>();
+            int? lastPromptTokens = null;
+            int? lastCachedTokens = null;
+            double? lastTokensPerSecond = null;
+            var generatedTokens = 0;
+            var modelCalls = 0;
 
             for (var stepNumber = 0; stepNumber <= MaximumToolSteps; stepNumber++)
             {
@@ -145,10 +153,17 @@ public sealed class ChatLoop
                 }
 
                 var promptTokens = GetInteger(responseMessage["rhodes_prompt_tokens"]);
+                var completionTokens = GetInteger(responseMessage["rhodes_completion_tokens"]) ?? 0;
                 if (promptTokens is not null)
                 {
-                    conversation.LastContextTokens = promptTokens + (GetInteger(responseMessage["rhodes_completion_tokens"]) ?? 0);
+                    conversation.LastContextTokens = promptTokens + completionTokens;
                 }
+
+                modelCalls++;
+                generatedTokens += completionTokens;
+                lastPromptTokens = promptTokens ?? lastPromptTokens;
+                lastCachedTokens = GetInteger(responseMessage["rhodes_cached_tokens"]) ?? lastCachedTokens;
+                lastTokensPerSecond = GetDouble(responseMessage["rhodes_tokens_per_second"]) ?? lastTokensPerSecond;
 
                 foreach (var chatEvent in thinkingFilter.Flush())
                 {
@@ -190,11 +205,14 @@ public sealed class ChatLoop
                     continue;
                 }
 
+                var statistics = new TurnStatistics(lastPromptTokens, lastCachedTokens, generatedTokens, lastTokensPerSecond, Math.Round(stopwatch.Elapsed.TotalSeconds, 1), modelCalls);
                 conversation.Messages.Add(new JsonObject
                 {
                     ["role"] = "assistant",
                     ["content"] = answer,
                     ["rhodes_reasoning"] = reasoning,
+                    ["rhodes_sent_at"] = DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture),
+                    ["rhodes_statistics"] = JsonSerializer.SerializeToNode(statistics, JsonSerializerOptions.Web),
                 });
                 conversation.LastUserMessageAt = now;
 
@@ -204,7 +222,7 @@ public sealed class ChatLoop
                 }
 
                 conversationStore.SaveNewMessages(conversation, messageCountBeforeTurn);
-                return new TurnResult(answer, string.Join("\n\n", reasoningParts), toolSteps, injectedMemories, stopwatch.Elapsed.TotalSeconds, thinkingLevel);
+                return new TurnResult(answer, string.Join("\n\n", reasoningParts), toolSteps, injectedMemories, stopwatch.Elapsed.TotalSeconds, thinkingLevel, statistics);
             }
 
             throw new InvalidOperationException("The tool loop ended without an answer.");
@@ -214,6 +232,54 @@ public sealed class ChatLoop
             // A failed turn leaves no half-finished messages behind.
             conversation.Messages.RemoveRange(messageCountBeforeTurn, conversation.Messages.Count - messageCountBeforeTurn);
             throw;
+        }
+        finally
+        {
+            conversation.TurnLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Removes the last turn (Shapto's last message and everything after it) so it can be run again,
+    /// and returns what that message said and which files it had.
+    /// Returns null if there's no turn, or it has already been folded into the summary.
+    /// </summary>
+    public async Task<RemovedTurn?> RemoveLastTurnAsync(Conversation conversation, CancellationToken cancellationToken)
+    {
+        await conversation.TurnLock.WaitAsync(cancellationToken);
+        try
+        {
+            var lastUserIndex = conversation.Messages.FindLastIndex(message => GetString(message["role"]) == "user");
+            if (lastUserIndex < 0 || lastUserIndex < conversation.SummaryCoversThrough)
+            {
+                return null;
+            }
+
+            var lastUserMessage = conversation.Messages[lastUserIndex];
+            var messageText = GetString(lastUserMessage["rhodes_display_text"]) ?? "";
+            var attachmentIds = (lastUserMessage["rhodes_attachments"] as JsonArray ?? new JsonArray())
+                .Select(attachmentChip => GetString(attachmentChip?["id"]))
+                .OfType<string>()
+                .ToList();
+
+            conversation.Messages.RemoveRange(lastUserIndex, conversation.Messages.Count - lastUserIndex);
+            conversation.ToolResultsCollapsedBefore = Math.Min(conversation.ToolResultsCollapsedBefore, lastUserIndex);
+            conversation.LastContextTokens = null;
+
+            // The header's "since last message" should count from the turn before the removed one.
+            var previousUserMessage = conversation.Messages.LastOrDefault(message => GetString(message["role"]) == "user");
+            var previousSentAtText = GetString(previousUserMessage?["rhodes_sent_at"]);
+            if (previousUserMessage is null)
+            {
+                conversation.LastUserMessageAt = null;
+            }
+            else if (DateTimeOffset.TryParse(previousSentAtText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var previousSentAt))
+            {
+                conversation.LastUserMessageAt = previousSentAt;
+            }
+
+            conversationStore.DeleteMessagesFrom(conversation, lastUserIndex);
+            return new RemovedTurn(messageText, attachmentIds);
         }
         finally
         {
@@ -386,7 +452,7 @@ public sealed class ChatLoop
     /// Header first, then injected memories, then the message. All of it goes in the user message,
     /// never the system prompt, so the system prompt stays identical and LM Studio can reuse its cache.
     /// </summary>
-    private static string BuildUserContent(string userText, string clientName, DateTimeOffset now, DateTimeOffset? lastMessageAt, DateTimeOffset chatStartedAt, IReadOnlyList<string> injectedMemories)
+    private static string BuildUserContent(string userText, string clientName, DateTimeOffset now, DateTimeOffset? lastMessageAt, DateTimeOffset chatStartedAt, string memoryBlock)
     {
         var builder = new StringBuilder();
         builder.Append('[')
@@ -401,25 +467,37 @@ public sealed class ChatLoop
 
         builder.AppendLine("]");
 
-        if (injectedMemories.Count > 0)
-        {
-            builder.AppendLine("[Memories that may be relevant]");
-            var usedCharacters = 0;
-            foreach (var memoryLine in injectedMemories)
-            {
-                if (usedCharacters + memoryLine.Length > AutoInjectMaximumCharacters)
-                {
-                    break;
-                }
-
-                builder.Append("- ").AppendLine(memoryLine);
-                usedCharacters += memoryLine.Length;
-            }
-
-            builder.AppendLine();
-        }
+        builder.Append(memoryBlock);
 
         builder.Append(userText);
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// The "[Memories that may be relevant]" block, or an empty string when nothing was injected.
+    /// </summary>
+    private static string BuildMemoryBlock(IReadOnlyList<string> injectedMemories)
+    {
+        if (injectedMemories.Count == 0)
+        {
+            return "";
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("[Memories that may be relevant]");
+        var usedCharacters = 0;
+        foreach (var memoryLine in injectedMemories)
+        {
+            if (usedCharacters + memoryLine.Length > AutoInjectMaximumCharacters)
+            {
+                break;
+            }
+
+            builder.Append("- ").AppendLine(memoryLine);
+            usedCharacters += memoryLine.Length;
+        }
+
+        builder.AppendLine();
         return builder.ToString();
     }
 
@@ -469,9 +547,11 @@ public sealed class ChatLoop
         var systemContent = conversation.Summary.Length == 0 ? systemPrompt : systemPrompt + "\n\n## Earlier in this conversation (summary)\n" + conversation.Summary;
         var requestMessages = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = systemContent } };
         var totalCharacters = systemContent.Length;
+        var memoryCharacters = 0;
 
         for (var index = conversation.SummaryCoversThrough; index < conversation.Messages.Count; index++)
         {
+            memoryCharacters += GetInteger(conversation.Messages[index]["rhodes_memory_characters"]) ?? 0;
             var requestMessage = conversation.Messages[index].DeepClone().AsObject();
             var toolName = GetString(requestMessage["rhodes_tool_name"]);
             var privateKeys = requestMessage
@@ -493,6 +573,8 @@ public sealed class ChatLoop
         }
 
         conversation.LastRequestCharacters = totalCharacters;
+        conversation.LastSystemCharacters = systemContent.Length;
+        conversation.LastMemoryCharacters = memoryCharacters;
         return requestMessages;
     }
 
@@ -524,5 +606,10 @@ public sealed class ChatLoop
     private static int? GetInteger(JsonNode? node)
     {
         return node is JsonValue value && value.TryGetValue<int>(out var number) ? number : null;
+    }
+
+    private static double? GetDouble(JsonNode? node)
+    {
+        return node is JsonValue value && value.TryGetValue<double>(out var number) ? number : null;
     }
 }

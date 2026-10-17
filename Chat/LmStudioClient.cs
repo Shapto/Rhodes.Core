@@ -129,6 +129,7 @@ public sealed class LmStudioClient
         JsonNode? timings = null;
         double? firstTokenSeconds = null;
         var keepReading = true;
+        var tokensPerSecond = RecordSpeed(usage, timings, stopwatch.Elapsed.TotalSeconds, firstTokenSeconds);
 
         while (keepReading && await reader.ReadLineAsync(cancellationToken) is { } line)
         {
@@ -189,23 +190,28 @@ public sealed class LmStudioClient
         var message = BuildMessage(contentBuilder, reasoningBuilder, toolCallParts);
         message["rhodes_prompt_tokens"] = usage?["prompt_tokens"]?.DeepClone();
         message["rhodes_completion_tokens"] = usage?["completion_tokens"]?.DeepClone();
+        message["rhodes_cached_tokens"] = usage?["prompt_tokens_details"]?["cached_tokens"]?.DeepClone();
+        message["rhodes_tokens_per_second"] = tokensPerSecond;
         return message;
     }
 
     /// <summary>
     /// Uses llama-server's own measurement when it sends one; otherwise generated tokens over the time after the first token.
+    /// Returns this request's speed, or null if it generated too little to measure.
     /// </summary>
-    private void RecordSpeed(JsonNode? usage, JsonNode? timings, double totalSeconds, double? firstTokenSeconds)
+    private double? RecordSpeed(JsonNode? usage, JsonNode? timings, double totalSeconds, double? firstTokenSeconds)
     {
         var completionTokens = GetDouble(usage?["completion_tokens"]);
         if (completionTokens is null || completionTokens < MinimumTokensForSpeed)
         {
-            return;
+            return null;
         }
 
         var generationSeconds = totalSeconds - (firstTokenSeconds ?? 0);
         var measuredSpeed = GetDouble(timings?["predicted_per_second"]);
-        LastTokensPerSecond = measuredSpeed ?? (generationSeconds > 0 ? completionTokens / generationSeconds : null);
+        var tokensPerSecond = measuredSpeed ?? (generationSeconds > 0 ? completionTokens / generationSeconds : null);
+        LastTokensPerSecond = tokensPerSecond ?? LastTokensPerSecond;
+        return tokensPerSecond;
     }
 
     private static double? GetDouble(JsonNode? node)

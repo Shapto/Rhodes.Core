@@ -68,7 +68,7 @@ public sealed partial class UploadStore
     /// </summary>
     public (UploadRecord Record, string Text)? Load(string uploadId)
     {
-        if (!UploadIdPattern().IsMatch(uploadId))
+        if (string.IsNullOrEmpty(uploadId) || !UploadIdPattern().IsMatch(uploadId))
         {
             return null;
         }

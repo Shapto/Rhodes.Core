@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json.Nodes;
+using System.Globalization;
 
 namespace Rhodes.Core.Chat;
 
@@ -210,6 +211,7 @@ public sealed class ConversationCompactor
                     Under "Files and tools involved", list only real file names and tool names that were used, such as search_memory.
                     If a section has nothing, write "- none". Shorter is better than padded.
                     Keep names, numbers, file names and decisions exactly. Leave out small talk.
+                    Messages start with when they were sent; when it matters when something was decided, keep the day and time.
                     """,
             },
         };
@@ -239,7 +241,9 @@ public sealed class ConversationCompactor
                 _ => $"[{GetString(message["rhodes_tool_name"]) ?? "tool"} result]",
             };
             var shownText = role == "tool" && text.Length > MaximumToolResultCharactersInTranscript ? text[..MaximumToolResultCharactersInTranscript] + "…" : text;
-            builder.Append(speaker).Append(": ").AppendLine(shownText).AppendLine();
+            var sentAtText = GetString(message["rhodes_sent_at"]);
+            var timePrefix = DateTimeOffset.TryParse(sentAtText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var sentAt) ? $"[{sentAt.ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture)}] " : "";
+            builder.Append(timePrefix).Append(speaker).Append(": ").AppendLine(shownText).AppendLine();
         }
 
         var transcript = builder.ToString();

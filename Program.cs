@@ -129,8 +129,24 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
     await SendAsync(new { type = "conversation", text = conversation.Id });
     try
     {
-        var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.AttachmentIds ?? [], chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
-        await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s", contextTokens = conversation.LastContextTokens, contextLimit = contextTokens });
+        var messageText = chatRequest.Message;
+        var attachmentIds = chatRequest.AttachmentIds ?? [];
+        if (chatRequest.Regenerate == true)
+        {
+            // Regenerate reruns Shapto's last message; with new text, it's an edit of that message.
+            var removedTurn = await chatLoop.RemoveLastTurnAsync(conversation, cancellationToken);
+            if (removedTurn is null)
+            {
+                await SendAsync(new { type = "error", text = "There's no reply to regenerate in this chat." });
+                return;
+            }
+
+            messageText = string.IsNullOrWhiteSpace(chatRequest.Message) ? removedTurn.MessageText : chatRequest.Message;
+            attachmentIds = removedTurn.AttachmentIds;
+        }
+
+        var turnResult = await chatLoop.RunTurnAsync(conversation, messageText, attachmentIds, chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
+        await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s", contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation), statistics = turnResult.Statistics, sentAt = DateTimeOffset.Now });
 
         var newTitle = await chatTitler.TitleNewChatAsync(conversation, CancellationToken.None);
         if (newTitle is not null)
@@ -141,7 +157,7 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         var compacted = await conversationCompactor.CompactIfNeededAsync(conversation, statusText => TrySendAsync(new { type = "status", text = statusText }), CancellationToken.None);
         if (compacted)
         {
-            await TrySendAsync(new { type = "compacted", text = conversation.Title, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens });
+            await TrySendAsync(new { type = "compacted", text = conversation.Title, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation) });
         }
     }
     catch (Exception exception) when (exception is not OperationCanceledException)
@@ -176,6 +192,13 @@ app.MapPost("/uploads", async (IFormFile file, UploadStore uploadStore, Cancella
         return Results.BadRequest(exception.Message);
     }
 }).DisableAntiforgery();
+
+app.MapDelete("/chats/{conversationId}", (string conversationId, ConversationManager conversationManager) => conversationManager.Delete(conversationId) switch
+{
+    ChatDeleteOutcome.Deleted => Results.Ok(),
+    ChatDeleteOutcome.Busy => Results.Conflict("Closure is still working in that chat. Stop the reply or wait, then delete it."),
+    _ => Results.NotFound(),
+});
 
 app.MapPost("/chats/{conversationId}/title", (string conversationId, TitleRequest titleRequest, ConversationManager conversationManager, ConversationStore conversationStore) =>
 {
