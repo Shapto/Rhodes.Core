@@ -25,8 +25,9 @@ public sealed class ConversationCompactor
     private readonly string personaPath;
     private readonly int contextTokens;
     private readonly ILogger<ConversationCompactor> logger;
+    private readonly ChatTitler chatTitler;
 
-    public ConversationCompactor(LmStudioClient lmStudioClient, ChatLoop chatLoop, ConversationStore conversationStore, string personaPath, int contextTokens, ILogger<ConversationCompactor> logger)
+    public ConversationCompactor(LmStudioClient lmStudioClient, ChatLoop chatLoop, ChatTitler chatTitler, ConversationStore conversationStore, string personaPath, int contextTokens, ILogger<ConversationCompactor> logger)
     {
         this.lmStudioClient = lmStudioClient;
         this.chatLoop = chatLoop;
@@ -34,6 +35,7 @@ public sealed class ConversationCompactor
         this.personaPath = personaPath;
         this.contextTokens = contextTokens;
         this.logger = logger;
+        this.chatTitler = chatTitler;
     }
 
     /// <summary>
@@ -107,6 +109,11 @@ public sealed class ConversationCompactor
 
             conversationStore.SaveCompaction(conversation);
             conversation.LastContextTokens = estimatedTokens;
+
+            if (summarized)
+            {
+                await chatTitler.RetitleFromSummaryAsync(conversation, cancellationToken);
+            }
 
             await ReportAsync(onProgress, "warming up…");
             try

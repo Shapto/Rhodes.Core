@@ -43,9 +43,12 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     builder.Configuration.GetValue("Chat:MaximumThinkingCharacters", 24000),
     serviceProvider.GetRequiredService<ILogger<ChatLoop>>()));
 
+builder.Services.AddSingleton<ChatTitler>();
+
 builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
     serviceProvider.GetRequiredService<LmStudioClient>(),
     serviceProvider.GetRequiredService<ChatLoop>(),
+    serviceProvider.GetRequiredService<ChatTitler>(),
     conversationStore,
     personaPath,
     builder.Configuration.GetValue("Chat:ContextTokens", 64000),
@@ -65,7 +68,7 @@ app.MapGet("/memory/find", (string text, MemoryStore store) => store.FindContain
 var webJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 app.MapPost("/memory/{memoryId}/delete", (string memoryId, MemoryStore store) => store.Delete(memoryId) ? Results.Ok() : Results.NotFound());
 
-app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, ConversationCompactor conversationCompactor, CancellationToken cancellationToken) =>
+app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, CancellationToken cancellationToken) =>
 {
     var conversation = string.IsNullOrEmpty(chatRequest.ConversationId) ? conversationManager.Create() : conversationManager.Get(chatRequest.ConversationId);
     if (conversation is null)
@@ -74,11 +77,15 @@ app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, Conversa
     }
 
     var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.Client ?? "test console", chatRequest.Thinking ?? "auto", null, cancellationToken);
-    _ = Task.Run(() => conversationCompactor.CompactIfNeededAsync(conversation, null, CancellationToken.None));
+    _ = Task.Run(async () =>
+    {
+        await chatTitler.TitleNewChatAsync(conversation, CancellationToken.None);
+        await conversationCompactor.CompactIfNeededAsync(conversation, null, CancellationToken.None);
+    });
     return Results.Ok(new { conversationId = conversation.Id, turnResult });
 });
 
-app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, ConversationCompactor conversationCompactor, HttpContext httpContext, CancellationToken cancellationToken) =>
+app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, HttpContext httpContext, CancellationToken cancellationToken) =>
 {
     httpContext.Response.ContentType = "text/event-stream";
     httpContext.Response.Headers.CacheControl = "no-cache";
@@ -102,10 +109,16 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
         await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s" });
 
+        var newTitle = await chatTitler.TitleNewChatAsync(conversation, CancellationToken.None);
+        if (newTitle is not null)
+        {
+            await TrySendAsync(new { type = "title", text = newTitle });
+        }
+
         var compacted = await conversationCompactor.CompactIfNeededAsync(conversation, statusText => TrySendAsync(new { type = "status", text = statusText }), CancellationToken.None);
         if (compacted)
         {
-            await TrySendAsync(new { type = "compacted" });
+            await TrySendAsync(new { type = "compacted", text = conversation.Title });
         }
     }
     catch (Exception exception) when (exception is not OperationCanceledException)
@@ -127,6 +140,26 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
 });
 
 app.MapGet("/chats", (ConversationStore conversationStore) => conversationStore.List(50));
+
+app.MapPost("/chats/{conversationId}/title", (string conversationId, TitleRequest titleRequest, ConversationManager conversationManager, ConversationStore conversationStore) =>
+{
+    var conversation = conversationManager.Get(conversationId);
+    if (conversation is null)
+    {
+        return Results.NotFound();
+    }
+
+    var newTitle = titleRequest.Title.Trim();
+    if (newTitle.Length == 0)
+    {
+        return Results.BadRequest("The title can't be empty.");
+    }
+
+    conversation.Title = newTitle.Length > 60 ? newTitle[..60] : newTitle;
+    conversation.TitleIsManual = true;
+    conversationStore.SaveTitle(conversation);
+    return Results.Ok(new { conversation.Title });
+});
 
 app.MapGet("/chats/{conversationId}/compaction", (string conversationId, ConversationManager conversationManager) =>
     conversationManager.Get(conversationId) is { } conversation

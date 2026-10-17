@@ -43,6 +43,7 @@ public sealed class ConversationStore : IDisposable
         AddColumnIfMissing("summary", "TEXT NOT NULL DEFAULT ''");
         AddColumnIfMissing("summary_covers_through", "INTEGER NOT NULL DEFAULT 0");
         AddColumnIfMissing("tool_results_collapsed_before", "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing("title_is_manual", "INTEGER NOT NULL DEFAULT 0");
     }
 
     private void AddColumnIfMissing(string columnName, string columnDefinition)
@@ -56,8 +57,11 @@ public sealed class ConversationStore : IDisposable
 
     public Conversation Create()
     {
-        var conversation = new Conversation(Guid.NewGuid().ToString("N"));
         var nowMilliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var conversation = new Conversation(Guid.NewGuid().ToString("N"))
+        {
+            CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(nowMilliseconds).ToLocalTime(),
+        };
         lock (databaseLock)
         {
             Execute(null, "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ($id, '', $now, $now);",
@@ -72,7 +76,7 @@ public sealed class ConversationStore : IDisposable
     {
         lock (databaseLock)
         {
-            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at, summary, summary_covers_through, tool_results_collapsed_before FROM conversations WHERE id = $id;", ("$id", conversationId));
+            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at, summary, summary_covers_through, tool_results_collapsed_before, created_at, title_is_manual FROM conversations WHERE id = $id;", ("$id", conversationId));
             using var conversationReader = conversationCommand.ExecuteReader();
             if (!conversationReader.Read())
             {
@@ -86,6 +90,8 @@ public sealed class ConversationStore : IDisposable
                 Summary = conversationReader.GetString(2),
                 SummaryCoversThrough = conversationReader.GetInt32(3),
                 ToolResultsCollapsedBefore = conversationReader.GetInt32(4),
+                CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(conversationReader.GetInt64(5)).ToLocalTime(),
+                TitleIsManual = conversationReader.GetInt64(6) != 0,
             };
 
             using var messagesCommand = CreateCommand(null, "SELECT message_json FROM conversation_messages WHERE conversation_id = $id ORDER BY position;", ("$id", conversationId));
@@ -111,9 +117,17 @@ public sealed class ConversationStore : IDisposable
         }
     }
 
-    /// <summary>
-    /// Saves the messages a finished turn added, from firstNewIndex onwards, plus the title and timing.
-    /// </summary>
+    public void SaveTitle(Conversation conversation)
+    {
+        lock (databaseLock)
+        {
+            Execute(null, "UPDATE conversations SET title = $title, title_is_manual = $titleIsManual WHERE id = $id;",
+                ("$title", conversation.Title),
+                ("$titleIsManual", conversation.TitleIsManual ? 1 : 0),
+                ("$id", conversation.Id));
+        }
+    }
+
     public void SaveNewMessages(Conversation conversation, int firstNewIndex)
     {
         var nowMilliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();

@@ -65,7 +65,7 @@ public sealed class ChatLoop
                 await EmitAsync(onEvent, new ChatEvent("memories", string.Join("\n", injectedMemories)));
             }
 
-            var userContent = BuildUserContent(messageText, clientName, now, conversation.LastUserMessageAt, injectedMemories);
+            var userContent = BuildUserContent(messageText, clientName, now, conversation.LastUserMessageAt, conversation.CreatedAt, injectedMemories);
             conversation.Messages.Add(new JsonObject
             {
                 ["role"] = "user",
@@ -327,14 +327,20 @@ public sealed class ChatLoop
     /// Header first, then injected memories, then the message. All of it goes in the user message,
     /// never the system prompt, so the system prompt stays identical and LM Studio can reuse its cache.
     /// </summary>
-    private static string BuildUserContent(string userText, string clientName, DateTimeOffset now, DateTimeOffset? lastMessageAt, IReadOnlyList<string> injectedMemories)
+    private static string BuildUserContent(string userText, string clientName, DateTimeOffset now, DateTimeOffset? lastMessageAt, DateTimeOffset chatStartedAt, IReadOnlyList<string> injectedMemories)
     {
         var builder = new StringBuilder();
         builder.Append('[')
             .Append(now.ToString("dddd yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture))
             .Append(" · ").Append(clientName)
-            .Append(" · ").Append(DescribeGap(now, lastMessageAt))
-            .AppendLine("]");
+            .Append(" · ").Append(DescribeGap(now, lastMessageAt));
+
+        if (lastMessageAt is not null)
+        {
+            builder.Append(" · ").Append(DescribeChatStart(now, chatStartedAt));
+        }
+
+        builder.AppendLine("]");
 
         if (injectedMemories.Count > 0)
         {
@@ -366,17 +372,33 @@ public sealed class ChatLoop
         }
 
         var gap = now - lastMessageAt.Value;
-        if (gap.TotalMinutes < 1)
+        return gap.TotalMinutes < 1 ? "just now" : $"{DescribeDuration(gap)} since last message";
+    }
+
+    /// <summary>
+    /// "chat started 12:58, 42 min ago". A chat from another day shows the weekday, and one older than a week shows the date.
+    /// </summary>
+    private static string DescribeChatStart(DateTimeOffset now, DateTimeOffset chatStartedAt)
+    {
+        var localStart = chatStartedAt.ToLocalTime();
+        var chatAge = now - localStart;
+        var startText = localStart.Date == now.Date ? localStart.ToString("HH:mm", CultureInfo.InvariantCulture) : chatAge.TotalDays < 7 ? localStart.ToString("dddd HH:mm", CultureInfo.InvariantCulture) : localStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        return chatAge.TotalMinutes < 1 ? $"chat started {startText}, just now" : $"chat started {startText}, {DescribeDuration(chatAge)} ago";
+    }
+
+    private static string DescribeDuration(TimeSpan duration)
+    {
+        if (duration.TotalHours < 1)
         {
-            return "just now";
+            return $"{(int)duration.TotalMinutes} min";
         }
 
-        if (gap.TotalHours < 1)
+        if (duration.TotalDays < 1)
         {
-            return $"{(int)gap.TotalMinutes} min since last message";
+            return $"{(int)duration.TotalHours} h";
         }
 
-        return gap.TotalDays < 1 ? $"{(int)gap.TotalHours} h since last message" : $"{(int)gap.TotalDays} days since last message";
+        return (int)duration.TotalDays == 1 ? "1 day" : $"{(int)duration.TotalDays} days";
     }
 
     /// <summary>

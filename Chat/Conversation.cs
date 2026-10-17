@@ -16,6 +16,10 @@ public sealed class Conversation
 
     public string Title { get; set; } = "";
 
+    public bool TitleIsManual { get; set; }
+
+    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.Now;
+
     public List<JsonObject> Messages { get; } = [];
 
     public DateTimeOffset? LastUserMessageAt { get; set; }
@@ -34,6 +38,8 @@ public sealed class Conversation
 }
 
 public sealed record ChatRequest(string Message, string? Client, string? Thinking, string? ConversationId);
+
+public sealed record TitleRequest(string Title);
 
 public sealed record ToolStep(string ToolName, string Arguments, string Result);
 
