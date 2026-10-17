@@ -289,6 +289,7 @@ function updateWorkedSummary(closureMessage) {
     const parts = [];
     if (closureMessage.thinkingText.textContent.length > 0) parts.push('THOUGHT · ' + closureMessage.thinkingText.textContent.length.toLocaleString() + ' CHARS');
     if (closureMessage.toolCount > 0) parts.push(closureMessage.toolCount + (closureMessage.toolCount === 1 ? ' TOOL' : ' TOOLS'));
+    if (parts.length === 0 && closureMessage.noteCount > 0) parts.push('NOTES');
     closureMessage.workedSummary.textContent = parts.join(' · ') || 'THINKING';
     closureMessage.workedDetails.hidden = parts.length === 0;
 }
@@ -298,6 +299,14 @@ function addToolStep(closureMessage, toolName, argumentsText, resultText) {
     addElement(stepElement, 'span', 'tool-chip', toolName + (argumentsText ? ' ' + argumentsText : ''));
     addElement(stepElement, 'span', null, '\n→ ' + resultText);
     closureMessage.toolCount++;
+    updateWorkedSummary(closureMessage);
+}
+
+// Text she wrote before a tool call, kept in the trail in order with the calls.
+function addInterimNote(closureMessage, noteText) {
+    if (!noteText || !noteText.trim()) return;
+    addElement(closureMessage.workedDetails, 'div', 'interim-note', noteText.trim());
+    closureMessage.noteCount = (closureMessage.noteCount || 0) + 1;
     updateWorkedSummary(closureMessage);
 }
 
@@ -628,7 +637,9 @@ function buildConversationView(conversationView) {
     let closureMessage = null;
     let lastStatistics = null;
 
-    for (const displayMessage of conversationView.messages) {
+    for (let messagePosition = 0; messagePosition < conversationView.messages.length; messagePosition++) {
+        const displayMessage = conversationView.messages[messagePosition];
+        const nextMessage = conversationView.messages[messagePosition + 1];
         if (!separatorPlaced && displayMessage.index >= summaryBoundary) {
             addCompactionSeparator(newMessagesContainer, conversationView.summary, summaryBoundary);
             separatorPlaced = true;
@@ -648,7 +659,10 @@ function buildConversationView(conversationView) {
                 closureMessage.thinkingText.textContent += (closureMessage.thinkingText.textContent ? '\n\n' : '') + displayMessage.reasoning;
                 updateWorkedSummary(closureMessage);
             }
-            if (displayMessage.text) createAnswer(closureMessage.bodyElement, null, displayMessage.text);
+            // Text followed by a tool result was written before a tool call: it belongs in the trail, like it did while streaming.
+            const isInterimText = nextMessage && nextMessage.role === 'tool';
+            if (displayMessage.text && isInterimText) addInterimNote(closureMessage, displayMessage.text);
+            else if (displayMessage.text) createAnswer(closureMessage.bodyElement, null, displayMessage.text);
             if (displayMessage.sentAt) showSentTime(closureMessage.sentTimeElement, displayMessage.sentAt);
             if (displayMessage.statistics) {
                 closureMessage.metaLine.textContent = describeStatistics(displayMessage.statistics, '');
@@ -900,6 +914,12 @@ async function sendMessage(messageText, attachmentsToSend, options) {
                 }
                 break;
             case 'tool':
+                // What she wrote before this call was her thinking out loud; it moves into the trail so only the final answer stays visible.
+                if (answer) {
+                    addInterimNote(closureMessage, answer.rawText);
+                    answer.element.remove();
+                    answer = null;
+                }
                 addToolStep(closureMessage, chatEvent.toolName, chatEvent.text, chatEvent.result);
                 addTurnTool(chatEvent.toolName);
                 if (chatEvent.toolName === 'save_memory' && !String(chatEvent.result).startsWith('Error')) {
@@ -907,8 +927,6 @@ async function sendMessage(messageText, attachmentsToSend, options) {
                     try { savedContent = JSON.parse(chatEvent.text).content || savedContent; } catch { }
                     addTurnMemory(savedContent, true);
                 }
-                if (answer) renderAnswer(answer);
-                answer = null;
                 break;
             case 'done':
                 answerFinished = true;

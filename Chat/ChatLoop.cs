@@ -101,6 +101,7 @@ public sealed class ChatLoop
             double? lastTokensPerSecond = null;
             var generatedTokens = 0;
             var modelCalls = 0;
+            var completedToolCalls = new HashSet<string>();
 
             for (var stepNumber = 0; stepNumber <= MaximumToolSteps; stepNumber++)
             {
@@ -194,7 +195,7 @@ public sealed class ChatLoop
                     foreach (var toolCall in toolCalls)
                     {
                         await EmitAsync(onEvent, new ChatEvent("status", $"running {GetString(toolCall!["function"]?["name"])}…"));
-                        var toolStep = await RunToolCallAsync(toolCall!, cancellationToken);
+                        var toolStep = completedToolCalls.Add(BuildToolCallKey(toolCall!)) ? await RunToolCallAsync(toolCall!, cancellationToken) : BuildRepeatedCallStep(toolCall!);
                         toolSteps.Add(toolStep);
                         await EmitAsync(onEvent, new ChatEvent("tool", toolStep.Arguments, toolStep.ToolName, toolStep.Result));
                         conversation.Messages.Add(new JsonObject
@@ -416,11 +417,39 @@ public sealed class ChatLoop
         return onEvent is null ? Task.CompletedTask : onEvent(chatEvent);
     }
 
-    private async Task<ToolStep> RunToolCallAsync(JsonNode toolCall, CancellationToken cancellationToken)
+    private static (string ToolName, string ArgumentsText) ReadToolCall(JsonNode toolCall)
     {
         var toolName = GetString(toolCall["function"]?["name"]) ?? "";
         var argumentsNode = toolCall["function"]?["arguments"];
         var argumentsText = argumentsNode is JsonValue argumentsValue && argumentsValue.TryGetValue<string>(out var argumentsString) ? argumentsString : argumentsNode?.ToJsonString() ?? "{}";
+        return (toolName, argumentsText);
+    }
+
+    /// <summary>
+    /// The tool name plus its arguments in one canonical form, so the same call with different spacing still counts as a repeat.
+    /// </summary>
+    private static string BuildToolCallKey(JsonNode toolCall)
+    {
+        var (toolName, argumentsText) = ReadToolCall(toolCall);
+        try
+        {
+            return toolName + "\n" + (JsonNode.Parse(string.IsNullOrWhiteSpace(argumentsText) ? "{}" : argumentsText)?.ToJsonString() ?? "");
+        }
+        catch (JsonException)
+        {
+            return toolName + "\n" + argumentsText;
+        }
+    }
+
+    private static ToolStep BuildRepeatedCallStep(JsonNode toolCall)
+    {
+        var (toolName, argumentsText) = ReadToolCall(toolCall);
+        return new ToolStep(toolName, argumentsText, "You already made this exact call in this turn; its result is above. Don't repeat it: use that result, try a different query or tool, or answer Shapto.");
+    }
+
+    private async Task<ToolStep> RunToolCallAsync(JsonNode toolCall, CancellationToken cancellationToken)
+    {
+        var (toolName, argumentsText) = ReadToolCall(toolCall);
 
         var tool = tools.FirstOrDefault(candidateTool => candidateTool.Name == toolName);
         if (tool is null)

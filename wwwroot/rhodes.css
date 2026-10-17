@@ -1514,3 +1514,14 @@ textarea {
     background-position: center;
     color: transparent;
 }
+
+/* Text she wrote before a tool call, shown in the worked trail between the calls. */
+.interim-note {
+    margin-top: 6px;
+    padding-left: 8px;
+    border-left: 2px solid var(--line-strong);
+    font-size: 13px;
+    color: var(--text-body);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

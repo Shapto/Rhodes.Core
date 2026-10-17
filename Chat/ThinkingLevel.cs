@@ -24,6 +24,11 @@ public static class ThinkingClassifier
         "is", "are", "does", "did", "will", "explain", "compare",
     ];
 
+    private static readonly HashSet<string> ActionStarts =
+    [
+        "search", "look", "find", "read", "check", "fetch", "open", "browse", "google", "research", "investigate", "debug", "fix", "review",
+    ];
+
     private static readonly Regex CodeLikePattern = new(
     @"`|[{};]|=>|\w+\.\w+\(|(?-i:\b[A-Z]\w+\.[A-Z]\w+)|[A-Za-z]:\\|\w+/\w+\.\w+|\bv?\d+\.\d+(\.\d+)?\b|exception|error|crash|stack ?trace",
     RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -38,6 +43,6 @@ public static class ThinkingClassifier
 
         var firstWord = trimmedText.Split(' ', 2)[0].ToLowerInvariant().TrimEnd(',', '.', '!');
         var isQuestion = trimmedText.Contains('?') || QuestionStarts.Contains(firstWord);
-        return isQuestion ? ThinkingLevel.Light : ThinkingLevel.Off;
+        return isQuestion || ActionStarts.Contains(firstWord) ? ThinkingLevel.Light : ThinkingLevel.Off;
     }
 }

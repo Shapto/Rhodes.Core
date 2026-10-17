@@ -29,6 +29,13 @@ public sealed partial class WebReader
     private const int MaximumReadmeCharacters = 4000;
     private const string BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 
+    private static readonly IReadOnlyDictionary<string, string> DefaultHeaders = new Dictionary<string, string>
+    {
+        ["User-Agent"] = BrowserUserAgent,
+        ["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
+        ["Accept-Language"] = "en-US,en;q=0.9",
+    };
+
     private readonly HttpClient httpClient;
     private readonly string? gitHubToken;
     private readonly ILogger<WebReader> logger;
@@ -51,23 +58,31 @@ public sealed partial class WebReader
         this.logger = logger;
     }
 
+    public Task<(string Body, string ContentType, string FinalUrl)> GetAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        return GetAsync(uri, null, cancellationToken);
+    }
+
     /// <summary>
     /// The raw response body (HTML for search pages). Falls back to curl on a block or a network error.
+    /// headers replaces the default browser-like headers when given (the search tool sends its own full set).
     /// </summary>
-    public async Task<(string Body, string ContentType, string FinalUrl)> GetAsync(Uri uri, CancellationToken cancellationToken)
+    public async Task<(string Body, string ContentType, string FinalUrl)> GetAsync(Uri uri, IReadOnlyDictionary<string, string>? headers, CancellationToken cancellationToken)
     {
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            request.Headers.UserAgent.ParseAdd(BrowserUserAgent);
-            request.Headers.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7");
-            request.Headers.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
+            foreach (var (headerName, headerValue) in headers ?? DefaultHeaders)
+            {
+                request.Headers.TryAddWithoutValidation(headerName, headerValue);
+            }
+
             using var response = await httpClient.SendAsync(request, cancellationToken);
             var statusCode = (int)response.StatusCode;
             if (statusCode is 403 or 429 or 503)
             {
                 logger.LogInformation("{Url} answered {StatusCode}; trying curl", uri, statusCode);
-                return await GetWithCurlAsync(uri, cancellationToken);
+                return await GetWithCurlAsync(uri, headers, cancellationToken);
             }
 
             if (!response.IsSuccessStatusCode)
@@ -82,7 +97,7 @@ public sealed partial class WebReader
         catch (HttpRequestException exception)
         {
             logger.LogInformation("{Url} failed with .NET ({Message}); trying curl", uri, exception.Message);
-            return await GetWithCurlAsync(uri, cancellationToken);
+            return await GetWithCurlAsync(uri, headers, cancellationToken);
         }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -211,7 +226,7 @@ public sealed partial class WebReader
     /// <summary>
     /// curl.exe ships with Windows 10 and 11. Its status code is appended after a marker so it can be split from the body.
     /// </summary>
-    private async Task<(string Body, string ContentType, string FinalUrl)> GetWithCurlAsync(Uri uri, CancellationToken cancellationToken)
+    public async Task<(string Body, string ContentType, string FinalUrl)> GetWithCurlAsync(Uri uri, IReadOnlyDictionary<string, string>? headers, CancellationToken cancellationToken)
     {
         const string statusMarker = "\n__RHODES_CURL__";
         var startInformation = new ProcessStartInfo(OperatingSystem.IsWindows() ? "curl.exe" : "curl")
@@ -221,10 +236,18 @@ public sealed partial class WebReader
             UseShellExecute = false,
             StandardOutputEncoding = Encoding.UTF8,
         };
-        foreach (var argument in new[] { "--silent", "--location", "--compressed", "--max-time", "20", "--max-filesize", MaximumResponseBytes.ToString(), "--user-agent", BrowserUserAgent, "--header", "Accept-Language: en-US,en;q=0.9", "--write-out", statusMarker + "%{http_code} %{content_type} %{url_effective}", uri.ToString() })
+        foreach (var argument in new[] { "--silent", "--location", "--compressed", "--max-time", "20", "--max-filesize", MaximumResponseBytes.ToString(), "--write-out", statusMarker + "%{http_code} %{content_type} %{url_effective}" })
         {
             startInformation.ArgumentList.Add(argument);
         }
+
+        foreach (var (headerName, headerValue) in headers ?? DefaultHeaders)
+        {
+            startInformation.ArgumentList.Add("--header");
+            startInformation.ArgumentList.Add(headerName + ": " + headerValue);
+        }
+
+        startInformation.ArgumentList.Add(uri.ToString());
 
         Process? startedProcess;
         try
