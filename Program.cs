@@ -6,6 +6,7 @@ using Rhodes.Core.Tools;
 using Rhodes.Core.Web;
 using System.Reflection.PortableExecutable;
 using System.Text.Json;
+using Rhodes.Core.Heartbeat;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true);
@@ -65,6 +66,22 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
 
 builder.Services.AddSingleton<ChatTitler>();
 
+// The heartbeat: Closure wakes on her own when Shapto has been away a while (see HeartbeatService for the rules).
+builder.Services.AddSingleton<ActivityTracker>();
+builder.Services.AddSingleton(new HeartbeatStore(Path.Combine(Path.GetDirectoryName(databasePath)!, "rhodes.db")));
+builder.Services.AddSingleton(serviceProvider => new HeartbeatRunner(
+    serviceProvider.GetRequiredService<LmStudioClient>(),
+    serviceProvider.GetRequiredService<HeartbeatStore>(),
+    conversationStore,
+    serviceProvider.GetRequiredService<ConversationManager>(),
+    serviceProvider.GetRequiredService<ChatLoop>(),
+    serviceProvider.GetServices<ICoreTool>(),
+    personaPath,
+    builder.Configuration.GetValue("Heartbeat:AllowWeb", false),
+    serviceProvider.GetRequiredService<ILogger<HeartbeatRunner>>()));
+builder.Services.AddSingleton<HeartbeatService>();
+builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<HeartbeatService>());
+
 builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
     serviceProvider.GetRequiredService<LmStudioClient>(),
     serviceProvider.GetRequiredService<ChatLoop>(),
@@ -111,8 +128,9 @@ app.MapGet("/memory/find", (string text, MemoryStore store) => store.FindContain
 var webJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 app.MapPost("/memory/{memoryId}/delete", (string memoryId, MemoryStore store) => store.Delete(memoryId) ? Results.Ok() : Results.NotFound());
 
-app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, CancellationToken cancellationToken) =>
+app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, ActivityTracker activityTracker, CancellationToken cancellationToken) =>
 {
+    using var chatActivity = activityTracker.BeginChat();
     var modelStatus = await modelStatusMonitor.GetFreshStatusAsync(cancellationToken);
     if (modelStatus.State != ModelStates.Online)
     {
@@ -134,8 +152,9 @@ app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitl
     return Results.Ok(new { conversationId = conversation.Id, turnResult });
 });
 
-app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, HttpContext httpContext, CancellationToken cancellationToken) =>
+app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, ActivityTracker activityTracker, HttpContext httpContext, CancellationToken cancellationToken) =>
 {
+    using var chatActivity = activityTracker.BeginChat();
     httpContext.Response.ContentType = "text/event-stream";
     httpContext.Response.Headers.CacheControl = "no-cache";
 
@@ -337,5 +356,23 @@ app.MapPost("/tools/{toolName}", async (string toolName, JsonElement arguments, 
         return Results.Text($"Error: {exception.Message}");
     }
 });
+
+app.MapGet("/heartbeat", (HeartbeatService heartbeatService) => heartbeatService.GetStatus());
+app.MapGet("/heartbeat/ticks", (int? limit, HeartbeatStore heartbeatStore) => heartbeatStore.ListTicks(Math.Clamp(limit ?? 20, 1, 100)));
+app.MapPost("/heartbeat/run", async (HeartbeatService heartbeatService) =>
+{
+    // Not tied to the request: closing the page shouldn't cut her tick short.
+    var (outcome, tick) = await heartbeatService.RunNowAsync(CancellationToken.None);
+    return outcome switch
+    {
+        ManualTickOutcome.Ran => Results.Ok(tick),
+        ManualTickOutcome.ModelUnavailable => Results.Problem("The model isn't online, so she can't wake up right now.", statusCode: StatusCodes.Status503ServiceUnavailable),
+        _ => Results.Conflict("She's busy: a chat or another tick is running."),
+    };
+});
+
+app.MapGet("/journal", (int? limit, int? offset, HeartbeatStore heartbeatStore) =>
+    Results.Ok(new { Total = heartbeatStore.CountJournal(), Entries = heartbeatStore.ListJournal(Math.Clamp(limit ?? 10, 1, 50), Math.Max(0, offset ?? 0)) }));
+app.MapDelete("/journal/{entryId:long}", (long entryId, HeartbeatStore heartbeatStore) => heartbeatStore.DeleteJournalEntry(entryId) ? Results.Ok() : Results.NotFound());
 
 app.Run();

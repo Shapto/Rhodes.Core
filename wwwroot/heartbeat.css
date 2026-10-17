@@ -1,0 +1,145 @@
+/* Rhodes home page: the away log and her journal. Uses the tokens from rhodes.css and the small pieces from home.css. */
+
+.away-list,
+.journal-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.away-row,
+.journal-row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px 12px;
+    background: var(--panel-raised);
+    border-left: 2px solid var(--outcome-color, var(--line-strong));
+}
+
+    .away-row.quiet {
+        background: transparent;
+        padding-top: 4px;
+        padding-bottom: 4px;
+    }
+
+[data-outcome="nothing"] { --outcome-color: var(--line-strong); }
+[data-outcome="looked"] { --outcome-color: #8fc7ff; }
+[data-outcome="journal"] { --outcome-color: var(--accent); }
+[data-outcome="interrupted"] { --outcome-color: var(--warning); }
+[data-outcome="failed"] { --outcome-color: var(--danger); }
+[data-outcome="running"] { --outcome-color: var(--accent-link); }
+
+.outcome-badge {
+    padding: 1px 6px;
+    border: 1px solid var(--outcome-color, var(--line-strong));
+    color: var(--outcome-color, var(--text-muted));
+    letter-spacing: 0.08em;
+}
+
+.away-note {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text-body);
+    overflow-wrap: anywhere;
+}
+
+    .away-row.quiet .away-note {
+        font-size: 13px;
+        color: var(--text-faint);
+    }
+
+.away-trail-toggle {
+    align-self: flex-start;
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--accent-link);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+}
+
+.away-trail {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-left: 10px;
+    border-left: 1px solid var(--line);
+}
+
+    .away-trail[hidden] {
+        display: none;
+    }
+
+.away-step-call {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.away-step-name {
+    color: var(--accent);
+}
+
+.away-step-arguments {
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+.away-step-result {
+    margin: 2px 0 0;
+    max-height: 160px;
+    overflow: auto;
+    padding: 6px 8px;
+    background: var(--ground);
+    border: 1px solid var(--line);
+    color: var(--text-muted);
+    font: 11px/1.45 'JetBrains Mono', monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.away-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* ---------- journal ---------- */
+
+.journal-row {
+    --outcome-color: var(--accent);
+}
+
+.journal-date {
+    color: var(--accent-link);
+}
+
+.journal-delete {
+    margin-left: auto;
+    min-height: 22px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+    .journal-row:hover .journal-delete,
+    .journal-delete:focus-visible {
+        opacity: 1;
+    }
+
+@media (hover: none) {
+    .journal-delete {
+        opacity: 1;
+    }
+}
+
+.journal-text {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--text-body);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

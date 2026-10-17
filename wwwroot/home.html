@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="rhodes.css">
     <link rel="stylesheet" href="home.css">
     <link rel="stylesheet" href="workbench.css">
+    <link rel="stylesheet" href="heartbeat.css">
 </head>
 <body>
     <div class="home">
@@ -46,6 +47,27 @@
                         </div>
                         <button type="button" class="send cut-small label" id="resumeButton">OPEN</button>
                     </div>
+                </section>
+
+                <section class="panel accent cut" aria-labelledby="awayHeading">
+                    <div class="panel-heading label">
+                        <span id="awayHeading">WHILE YOU WERE AWAY</span>
+                        <span class="panel-heading-note mono" id="heartbeatNote">checking…</span>
+                    </div>
+                    <div class="away-list" id="awayList" aria-live="polite"><span class="readout-empty">loading…</span></div>
+                    <div class="away-actions">
+                        <button type="button" class="turn-action" id="wakeButton" title="Run a heartbeat tick now, without waiting for the quiet time">WAKE HER NOW</button>
+                        <span class="mono bench-meta" id="wakeMeta"></span>
+                    </div>
+                </section>
+
+                <section class="panel cut" aria-labelledby="journalHeading">
+                    <div class="panel-heading label">
+                        <span id="journalHeading">HER JOURNAL</span>
+                        <span class="panel-heading-note mono" id="journalNote"></span>
+                    </div>
+                    <div class="journal-list" id="journalList"><span class="readout-empty">loading…</span></div>
+                    <button type="button" class="load-more mono" id="journalMoreButton" hidden>OLDER ENTRIES</button>
                 </section>
 
                 <section class="panel cut workbench" aria-labelledby="workbenchHeading">
@@ -134,6 +156,8 @@
                         <dd id="moduleModel">—</dd>
                         <dt>speed</dt>
                         <dd id="moduleSpeed">—</dd>
+                        <dt>heartbeat</dt>
+                        <dd id="moduleHeartbeat">—</dd>
                     </dl>
                 </section>
 
@@ -158,9 +182,7 @@
                 <section class="panel cut later" aria-labelledby="laterHeading">
                     <div class="panel-heading label" id="laterHeading">LATER</div>
                     <ul class="later-list mono">
-                        <li><span>morning brief</span><span>needs the heartbeat</span></li>
-                        <li><span>her journal</span><span>needs the heartbeat</span></li>
-                        <li><span>while you were away</span><span>needs the heartbeat</span></li>
+                        <li><span>morning brief</span><span>next round</span></li>
                         <li><span>project board</span><span>not designed yet</span></li>
                     </ul>
                 </section>
@@ -189,5 +211,6 @@
     <script src="rhodes-common.js"></script>
     <script src="home.js"></script>
     <script src="workbench.js"></script>
+    <script src="heartbeat.js"></script>
 </body>
 </html>
