@@ -18,7 +18,10 @@ namespace Rhodes.Core.Chat;
 /// </summary>
 public sealed partial class ChatLoop
 {
-    private const int MaximumToolSteps = 10;
+    private const int MaximumToolSteps = 20;
+
+    // Compaction only runs between turns, so a long tool run is cut short here before it can overflow the context mid-turn.
+    private const double ToolRunContextLimit = 0.75;
     private const int AutoInjectCount = 3;
     private const double AutoInjectMinimumSimilarity = 0.5;
     private const int AutoInjectMaximumCharacters = 1500;
@@ -28,6 +31,7 @@ public sealed partial class ChatLoop
     private const int MaximumReportedJournalCharacters = 600;
     private const int AnnouncementTailCharacters = 250;
     private const string OutOfToolsNote = "[Rhodes: you've used all your tool calls for this message. Answer now with what you found, and say plainly what you didn't get to, so Shapto can tell you to continue.]";
+    private const string ContextFullNote = "[Rhodes: the chat's context is nearly full, so no more tool calls this message. Answer now with what you found, and say plainly what you didn't get to; the chat gets compacted after your answer and Shapto can tell you to continue.]";
     private const string UnfinishedActionNudge = "[Rhodes: your reply ends by saying you'll do something, but you didn't call a tool. If you meant to, call it now. If not, just answer without promising it.]";
 
     private readonly LmStudioClient lmStudioClient;
@@ -122,11 +126,18 @@ public sealed partial class ChatLoop
             string? announcedAction = null;
             var announcedReasoning = "";
             var nudgeUsed = false;
+            var previousRequestCharacters = 0;
+            int? previousPromptTokens = null;
 
             for (var stepNumber = 0; stepNumber <= MaximumToolSteps; stepNumber++)
             {
-                var offerTools = stepNumber < MaximumToolSteps;
                 var requestMessages = BuildRequestMessages(systemPrompt, conversation);
+
+                // The request about to go out, in tokens: its size in characters at the previous call's tokens-per-character.
+                var estimatedRequestTokens = previousRequestCharacters > 0 && previousPromptTokens is { } knownPromptTokens ? (double)conversation.LastRequestCharacters * knownPromptTokens / previousRequestCharacters : 0;
+                var contextNearlyFull = estimatedRequestTokens > contextTokens * ToolRunContextLimit;
+                var offerTools = stepNumber < MaximumToolSteps && !contextNearlyFull;
+                var requestCharacters = conversation.LastRequestCharacters;
                 var stepThinkingLevel = thinkingLevel;
                 if (announcedAction is not null)
                 {
@@ -140,7 +151,7 @@ public sealed partial class ChatLoop
                 if (!offerTools)
                 {
                     // Without this she doesn't know the tools are gone, and tends to type her next call out as text.
-                    requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = OutOfToolsNote });
+                    requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = contextNearlyFull ? ContextFullNote : OutOfToolsNote });
                 }
                 var thinkingFilter = new StreamingThinkingFilter();
                 var thinkingCharacters = 0;
@@ -194,6 +205,8 @@ public sealed partial class ChatLoop
 
                 var promptTokens = GetInteger(responseMessage["rhodes_prompt_tokens"]);
                 var completionTokens = GetInteger(responseMessage["rhodes_completion_tokens"]) ?? 0;
+                previousRequestCharacters = requestCharacters;
+                previousPromptTokens = promptTokens ?? previousPromptTokens;
                 if (promptTokens is not null)
                 {
                     conversation.LastContextTokens = promptTokens + completionTokens;
