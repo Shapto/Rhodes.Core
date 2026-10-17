@@ -226,11 +226,14 @@ function createAnswer(parentElement, beforeElement, rawText) {
 function addAttachmentChips(parentElement, attachments) {
     const attachmentRow = addElement(parentElement, 'div', 'attachment-row');
     for (const attachment of attachments) {
-        const tooBig = attachment.inline === false;
-        const chipElement = addElement(attachmentRow, 'span', 'attachment-chip static' + (tooBig ? ' too-big' : ''));
+        // "indexed" = too big to read whole, so she searches it; older messages from before documents only say inline: false.
+        const indexed = attachment.mode === 'indexed';
+        const tooBig = attachment.inline === false && !indexed;
+        const chipElement = addElement(attachmentRow, 'span', 'attachment-chip static' + (indexed ? ' indexed' : tooBig ? ' too-big' : ''));
         addFileName(chipElement, attachment);
         const sizeText = attachment.estimatedTokens !== undefined ? formatTokens(attachment.estimatedTokens) + ' TOK' : '';
-        addElement(chipElement, 'span', 'file-size', tooBig ? sizeText + ' · TOO BIG TO READ YET' : sizeText);
+        const sizeElement = addElement(chipElement, 'span', 'file-size', indexed ? sizeText + ' · SEARCHABLE' : tooBig ? sizeText + ' · TOO BIG TO READ YET' : sizeText);
+        if (indexed) sizeElement.title = 'Too big to read whole: she got its map and the parts matching your message, and can search the rest.';
     }
     return attachmentRow;
 }

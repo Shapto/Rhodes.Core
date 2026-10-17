@@ -878,6 +878,14 @@ details.worked {
         color: var(--danger);
     }
 
+    .attachment-chip.indexed {
+        border-color: var(--accent-dim);
+    }
+
+        .attachment-chip.indexed .file-size {
+            color: var(--accent-link);
+        }
+
     .attachment-chip.too-big {
         border-color: #5a4a2a;
     }

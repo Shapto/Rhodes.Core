@@ -1,8 +1,11 @@
-using Rhodes.Core.Memory;
-using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
-using Rhodes.Core.Tools;
 using Rhodes.Core.Chat;
+using Rhodes.Core.Documents;
+using Rhodes.Core.Memory;
+using Rhodes.Core.Tools;
+using Rhodes.Core.Web;
+using System.Reflection.PortableExecutable;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true);
@@ -20,10 +23,16 @@ var decayHalfLifeDays = builder.Configuration.GetValue("Memory:DecayHalfLifeDays
 builder.Services.AddSingleton(new MemoryRanker(memoryStore, decayHalfLifeDays));
 builder.Services.AddSingleton<ICoreTool, SearchMemoryTool>();
 builder.Services.AddSingleton<ICoreTool, SaveMemoryTool>();
+builder.Services.AddSingleton<ICoreTool, WebSearchTool>();
+builder.Services.AddSingleton<ICoreTool, WebFetchTool>();
+builder.Services.AddSingleton<ICoreTool, SearchDocumentTool>();
+builder.Services.AddSingleton<ICoreTool, ReadDocumentTool>();
+builder.Services.AddSingleton(serviceProvider => new WebReader(builder.Configuration["GitHub:Token"], serviceProvider.GetRequiredService<ILogger<WebReader>>()));
 
 var personaPath = builder.Configuration["Persona:Path"] ?? Path.Combine(Path.GetDirectoryName(databasePath)!, "persona.md");
 var contextTokens = builder.Configuration.GetValue("Chat:ContextTokens", 64000);
 builder.Services.AddSingleton(new UploadStore(Path.Combine(Path.GetDirectoryName(databasePath)!, "uploads")));
+builder.Services.AddSingleton(new DocumentStore(Path.Combine(Path.GetDirectoryName(databasePath)!, "rhodes.db"), Path.Combine(Path.GetDirectoryName(databasePath)!, "documents")));
 
 builder.Services.AddSingleton(serviceProvider => new LmStudioClient(
     builder.Configuration["LmStudio:BaseUrl"] ?? "http://localhost:1234/v1",
@@ -47,6 +56,7 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     serviceProvider.GetRequiredService<MemoryRanker>(),
     conversationStore,
     serviceProvider.GetRequiredService<UploadStore>(),
+    serviceProvider.GetRequiredService<DocumentStore>(),
     serviceProvider.GetServices<ICoreTool>(),
     personaPath,
     builder.Configuration.GetValue("Chat:MaximumThinkingCharacters", 24000),
@@ -68,7 +78,12 @@ builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
 
 var app = builder.Build();
 
-app.UseStaticFiles();
+// "no-cache" makes the browser check with the core before reusing a page file, so edits show up on the first reload.
+// Unchanged files still come back as a cheap "not modified", so nothing gets slower on the LAN.
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = staticFileContext => staticFileContext.Context.Response.Headers.CacheControl = "no-cache",
+});
 app.MapGet("/", () => Results.Redirect("/home.html"));
 app.MapGet("/status", (ModelStatusMonitor modelStatusMonitor) => modelStatusMonitor.Current);
 

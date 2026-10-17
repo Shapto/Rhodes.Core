@@ -1,6 +1,8 @@
 ﻿using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Rhodes.Core.Documents;
+using Rhodes.Core.Web;
 
 namespace Rhodes.Core.Chat;
 
@@ -18,7 +20,7 @@ public sealed class UploadRejectedException(string message) : Exception(message)
 public sealed partial class UploadStore
 {
     public const double TokensPerCharacter = 0.3;
-    private const int MaximumBytes = 5 * 1024 * 1024;
+    private const int MaximumBytes = 25 * 1024 * 1024;
     private const string MetadataFileName = "upload.json";
 
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase) { ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic" };
