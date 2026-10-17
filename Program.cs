@@ -29,6 +29,12 @@ builder.Services.AddSingleton(serviceProvider => new LmStudioClient(
     builder.Configuration["LmStudio:ApiKey"],
     serviceProvider.GetRequiredService<ILogger<LmStudioClient>>()));
 
+builder.Services.AddSingleton(serviceProvider => new ModelStatusMonitor(
+    builder.Configuration["LmStudio:BaseUrl"] ?? "http://localhost:1234/v1",
+    serviceProvider.GetRequiredService<LmStudioClient>(),
+    serviceProvider.GetRequiredService<ILogger<ModelStatusMonitor>>()));
+builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<ModelStatusMonitor>());
+
 var conversationStore = new ConversationStore(Path.Combine(Path.GetDirectoryName(databasePath)!, "rhodes.db"));
 builder.Services.AddSingleton(conversationStore);
 builder.Services.AddSingleton<ConversationManager>();
@@ -60,6 +66,8 @@ var app = builder.Build();
 
 app.UseStaticFiles();
 app.MapGet("/", () => Results.Redirect("/test.html"));
+app.MapGet("/status", (ModelStatusMonitor modelStatusMonitor) => modelStatusMonitor.Current);
+
 app.MapGet("/memory/inject-preview", (string message, ChatLoop chatLoop) => chatLoop.FindMemoriesToInject(message));
 
 app.MapGet("/memory/find", (string text, MemoryStore store) => store.FindContaining(text, 200)
@@ -68,8 +76,14 @@ app.MapGet("/memory/find", (string text, MemoryStore store) => store.FindContain
 var webJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 app.MapPost("/memory/{memoryId}/delete", (string memoryId, MemoryStore store) => store.Delete(memoryId) ? Results.Ok() : Results.NotFound());
 
-app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, CancellationToken cancellationToken) =>
+app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, CancellationToken cancellationToken) =>
 {
+    var modelStatus = await modelStatusMonitor.GetFreshStatusAsync(cancellationToken);
+    if (modelStatus.State != ModelStates.Online)
+    {
+        return Results.Problem(modelStatus.DescribeProblem(), statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
     var conversation = string.IsNullOrEmpty(chatRequest.ConversationId) ? conversationManager.Create() : conversationManager.Get(chatRequest.ConversationId);
     if (conversation is null)
     {
@@ -85,7 +99,7 @@ app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitl
     return Results.Ok(new { conversationId = conversation.Id, turnResult });
 });
 
-app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, HttpContext httpContext, CancellationToken cancellationToken) =>
+app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, HttpContext httpContext, CancellationToken cancellationToken) =>
 {
     httpContext.Response.ContentType = "text/event-stream";
     httpContext.Response.Headers.CacheControl = "no-cache";
@@ -95,7 +109,12 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         await httpContext.Response.WriteAsync($"data: {JsonSerializer.Serialize(payload, webJsonOptions)}\n\n", cancellationToken);
         await httpContext.Response.Body.FlushAsync(cancellationToken);
     }
-
+    var modelStatus = await modelStatusMonitor.GetFreshStatusAsync(cancellationToken);
+    if (modelStatus.State != ModelStates.Online)
+    {
+        await SendAsync(new { type = "error", text = modelStatus.DescribeProblem() });
+        return;
+    }
     var conversation = string.IsNullOrEmpty(chatRequest.ConversationId) ? conversationManager.Create() : conversationManager.Get(chatRequest.ConversationId);
     if (conversation is null)
     {

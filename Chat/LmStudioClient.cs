@@ -18,6 +18,8 @@ public sealed class LmStudioClient
     private readonly string modelIdentifier;
     private readonly ILogger<LmStudioClient> logger;
 
+    private const int MinimumTokensForSpeed = 16;
+
     private const int LightThinkingBudget = 1000;
     private const int FullThinkingBudget = 4000;
     private const string ThinkingBudgetMessage = "\n\nOkay, I've thought about this enough. Time to answer.";
@@ -53,9 +55,12 @@ public sealed class LmStudioClient
     /// </summary>
     public sealed class ThinkingLimitException(string message) : Exception(message);
 
+    public double? LastTokensPerSecond { get; private set; }
+
     public LmStudioClient(string baseUrl, string modelIdentifier, string? apiKey, ILogger<LmStudioClient> logger)
     {
-        httpClient = new HttpClient
+        var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) };
+        httpClient = new HttpClient(handler)
         {
             BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromMinutes(10),
@@ -121,6 +126,7 @@ public sealed class LmStudioClient
         var reasoningBuilder = new StringBuilder();
         var toolCallParts = new SortedDictionary<int, ToolCallParts>();
         JsonNode? usage = null;
+        JsonNode? timings = null;
         double? firstTokenSeconds = null;
         var keepReading = true;
 
@@ -139,6 +145,7 @@ public sealed class LmStudioClient
 
             var chunk = JsonNode.Parse(payload);
             usage = chunk?["usage"] ?? usage;
+            timings = chunk?["timings"] ?? timings;
             var choices = chunk?["choices"] as JsonArray;
             var delta = choices is { Count: > 0 } ? choices[0]?["delta"] : null;
             if (delta is null)
@@ -177,10 +184,33 @@ public sealed class LmStudioClient
             usage?["completion_tokens"],
             keepReading ? "" : ", stopped early");
 
+        RecordSpeed(usage, timings, stopwatch.Elapsed.TotalSeconds, firstTokenSeconds);
+
         var message = BuildMessage(contentBuilder, reasoningBuilder, toolCallParts);
         message["rhodes_prompt_tokens"] = usage?["prompt_tokens"]?.DeepClone();
         message["rhodes_completion_tokens"] = usage?["completion_tokens"]?.DeepClone();
         return message;
+    }
+
+    /// <summary>
+    /// Uses llama-server's own measurement when it sends one; otherwise generated tokens over the time after the first token.
+    /// </summary>
+    private void RecordSpeed(JsonNode? usage, JsonNode? timings, double totalSeconds, double? firstTokenSeconds)
+    {
+        var completionTokens = GetDouble(usage?["completion_tokens"]);
+        if (completionTokens is null || completionTokens < MinimumTokensForSpeed)
+        {
+            return;
+        }
+
+        var generationSeconds = totalSeconds - (firstTokenSeconds ?? 0);
+        var measuredSpeed = GetDouble(timings?["predicted_per_second"]);
+        LastTokensPerSecond = measuredSpeed ?? (generationSeconds > 0 ? completionTokens / generationSeconds : null);
+    }
+
+    private static double? GetDouble(JsonNode? node)
+    {
+        return node is JsonValue value && value.TryGetValue<double>(out var number) ? number : null;
     }
 
     /// <summary>
