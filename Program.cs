@@ -45,10 +45,13 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
 
 builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
     serviceProvider.GetRequiredService<LmStudioClient>(),
+    serviceProvider.GetRequiredService<ChatLoop>(),
     conversationStore,
     personaPath,
     builder.Configuration.GetValue("Chat:ContextTokens", 64000),
     serviceProvider.GetRequiredService<ILogger<ConversationCompactor>>()));
+
+
 
 var app = builder.Build();
 

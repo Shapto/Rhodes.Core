@@ -209,6 +209,22 @@ public sealed class ChatLoop
     }
 
     /// <summary>
+    /// Sends the chat as it now stands, plus a placeholder message, and stops at the first answer token,
+    /// so llama-server already has the compacted prompt cached when Shapto's next message arrives.
+    /// The caller must already hold conversation.TurnLock.
+    /// </summary>
+    public async Task WarmUpCacheAsync(Conversation conversation, CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var systemPrompt = await File.ReadAllTextAsync(personaPath, cancellationToken);
+        var requestMessages = BuildRequestMessages(systemPrompt, conversation);
+        requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = "." });
+
+        await lmStudioClient.StreamCompletionAsync(requestMessages, (JsonArray)toolDefinitions.DeepClone(), ThinkingLevel.Off, (_, _) => Task.FromResult(false), cancellationToken);
+        logger.LogInformation("Chat {ConversationId}: cache warmed up in {Seconds:0.0} s", conversation.Id, stopwatch.Elapsed.TotalSeconds);
+    }
+
+    /// <summary>
     /// "/quick ..." turns thinking off and "/think ..." forces full thinking; the command itself is removed.
     /// </summary>
     private static (string MessageText, ThinkingLevel? ForcedLevel) ParseThinkingCommand(string userText)

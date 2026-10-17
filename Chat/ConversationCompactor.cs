@@ -5,26 +5,31 @@ namespace Rhodes.Core.Chat;
 
 /// <summary>
 /// Shrinks what the model sees once a chat passes 70% of the context: first collapses old tool results,
-/// then, if still above 40%, folds everything before the last turns into a running summary.
-/// The full chat in rhodes.db is never changed.
+/// then, if still above 40% and enough would be folded in, folds everything before the last turns into a running summary.
+/// Afterwards it warms llama-server's cache with the new prompt. The full chat in rhodes.db is never changed.
 /// </summary>
 public sealed class ConversationCompactor
 {
     private const double StartFraction = 0.7;
     private const double TargetFraction = 0.4;
+    private const double MinimumFoldFraction = 0.1;
     private const int RecentTurnsKept = 6;
     private const int MaximumTranscriptCharacters = 120_000;
     private const int MaximumToolResultCharactersInTranscript = 600;
+    private const int CollapsedToolResultCharacters = 120;
+    private const int MessageOverheadCharacters = 20;
 
     private readonly LmStudioClient lmStudioClient;
+    private readonly ChatLoop chatLoop;
     private readonly ConversationStore conversationStore;
     private readonly string personaPath;
     private readonly int contextTokens;
     private readonly ILogger<ConversationCompactor> logger;
 
-    public ConversationCompactor(LmStudioClient lmStudioClient, ConversationStore conversationStore, string personaPath, int contextTokens, ILogger<ConversationCompactor> logger)
+    public ConversationCompactor(LmStudioClient lmStudioClient, ChatLoop chatLoop, ConversationStore conversationStore, string personaPath, int contextTokens, ILogger<ConversationCompactor> logger)
     {
         this.lmStudioClient = lmStudioClient;
+        this.chatLoop = chatLoop;
         this.conversationStore = conversationStore;
         this.personaPath = personaPath;
         this.contextTokens = contextTokens;
@@ -32,7 +37,8 @@ public sealed class ConversationCompactor
     }
 
     /// <summary>
-    /// Returns true if anything was compacted. onProgress gets a short status line when work starts.
+    /// Returns true if anything was compacted. onProgress gets a short status line for each stage:
+    /// "summarizing N earlier messages", then "warming up…".
     /// </summary>
     public async Task<bool> CompactIfNeededAsync(Conversation conversation, Func<string, Task>? onProgress, CancellationToken cancellationToken)
     {
@@ -51,29 +57,67 @@ public sealed class ConversationCompactor
                 return false;
             }
 
-            if (onProgress is not null)
-            {
-                await onProgress("compacting older messages…");
-            }
-
             var tokensPerCharacter = conversation.LastRequestCharacters > 0 ? (double)usedTokens / conversation.LastRequestCharacters : 0.3;
             var systemPrompt = await File.ReadAllTextAsync(personaPath, cancellationToken);
 
+            // Stage 1: collapse old tool results. Cheap, no model call.
+            ChatLoop.BuildRequestMessages(systemPrompt, conversation);
+            var charactersBeforeCollapse = conversation.LastRequestCharacters;
             conversation.ToolResultsCollapsedBefore = keepFromIndex;
             ChatLoop.BuildRequestMessages(systemPrompt, conversation);
+            var collapsedAnything = conversation.LastRequestCharacters < charactersBeforeCollapse;
             var estimatedTokens = (int)(conversation.LastRequestCharacters * tokensPerCharacter);
-            logger.LogInformation("Chat {ConversationId}: collapsed old tool results, {UsedTokens} -> about {EstimatedTokens} tokens", conversation.Id, usedTokens, estimatedTokens);
+            if (collapsedAnything)
+            {
+                logger.LogInformation("Chat {ConversationId}: collapsed old tool results, {UsedTokens} -> about {EstimatedTokens} tokens", conversation.Id, usedTokens, estimatedTokens);
+            }
 
+            // Stage 2: summarize, but only when enough would be folded in to be worth a model call and a cache rebuild.
+            var summarized = false;
             if (estimatedTokens > contextTokens * TargetFraction)
             {
-                conversation.Summary = await WriteSummaryAsync(conversation, keepFromIndex, cancellationToken);
-                conversation.SummaryCoversThrough = keepFromIndex;
-                ChatLoop.BuildRequestMessages(systemPrompt, conversation);
-                logger.LogInformation("Chat {ConversationId}: summarized messages before {KeepFromIndex}, now about {EstimatedTokens} tokens", conversation.Id, keepFromIndex, (int)(conversation.LastRequestCharacters * tokensPerCharacter));
+                var foldedMessageCount = keepFromIndex - conversation.SummaryCoversThrough;
+                var foldedTokens = (int)(MeasureCharacters(conversation, conversation.SummaryCoversThrough, keepFromIndex) * tokensPerCharacter);
+                if (foldedTokens < contextTokens * MinimumFoldFraction)
+                {
+                    logger.LogInformation("Chat {ConversationId}: only about {FoldedTokens} tokens could be summarized; waiting until there's more", conversation.Id, foldedTokens);
+                }
+                else
+                {
+                    await ReportAsync(onProgress, $"summarizing {foldedMessageCount} earlier messages");
+                    var summaryText = await WriteSummaryAsync(conversation, keepFromIndex, cancellationToken);
+                    if (string.IsNullOrWhiteSpace(summaryText))
+                    {
+                        throw new InvalidOperationException("The model returned an empty summary.");
+                    }
+
+                    conversation.Summary = summaryText;
+                    conversation.SummaryCoversThrough = keepFromIndex;
+                    ChatLoop.BuildRequestMessages(systemPrompt, conversation);
+                    estimatedTokens = (int)(conversation.LastRequestCharacters * tokensPerCharacter);
+                    summarized = true;
+                    logger.LogInformation("Chat {ConversationId}: summarized {FoldedMessageCount} messages, now about {EstimatedTokens} tokens", conversation.Id, foldedMessageCount, estimatedTokens);
+                }
+            }
+
+            if (!collapsedAnything && !summarized)
+            {
+                return false;
             }
 
             conversationStore.SaveCompaction(conversation);
-            conversation.LastContextTokens = null;
+            conversation.LastContextTokens = estimatedTokens;
+
+            await ReportAsync(onProgress, "warming up…");
+            try
+            {
+                await chatLoop.WarmUpCacheAsync(conversation, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception, "Cache warm-up for chat {ConversationId} failed; the next message will rebuild it", conversation.Id);
+            }
+
             return true;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -87,6 +131,11 @@ public sealed class ConversationCompactor
         }
     }
 
+    private static Task ReportAsync(Func<string, Task>? onProgress, string progressText)
+    {
+        return onProgress is null ? Task.CompletedTask : onProgress(progressText);
+    }
+
     /// <summary>
     /// The index of the user message that starts the last RecentTurnsKept turns; everything before it may be compacted.
     /// </summary>
@@ -98,6 +147,25 @@ public sealed class ConversationCompactor
             .Select(entry => entry.Index)
             .ToList();
         return userMessageIndexes.Count > RecentTurnsKept ? userMessageIndexes[^RecentTurnsKept] : 0;
+    }
+
+    /// <summary>
+    /// Rough size of a range of messages as the model currently sees them.
+    /// Collapsed tool results count as their short placeholder; Rhodes-only fields like reasoning don't count.
+    /// </summary>
+    private static int MeasureCharacters(Conversation conversation, int fromIndex, int toIndex)
+    {
+        var totalCharacters = 0;
+        for (var index = fromIndex; index < toIndex; index++)
+        {
+            var message = conversation.Messages[index];
+            var isCollapsedToolResult = index < conversation.ToolResultsCollapsedBefore && GetString(message["role"]) == "tool";
+            var contentCharacters = GetString(message["content"])?.Length ?? 0;
+            var toolCallCharacters = message["tool_calls"]?.ToJsonString().Length ?? 0;
+            totalCharacters += isCollapsedToolResult ? CollapsedToolResultCharacters : contentCharacters + toolCallCharacters + MessageOverheadCharacters;
+        }
+
+        return totalCharacters;
     }
 
     private async Task<string> WriteSummaryAsync(Conversation conversation, int keepFromIndex, CancellationToken cancellationToken)
@@ -131,6 +199,9 @@ public sealed class ConversationCompactor
                     Files and tools involved:
                     - ...
                     Carry over every item from the previous summary unless the new messages settle or reverse it; you may shorten an item's wording, but never drop it. A settled open thread moves to Decisions made.
+                    Record only what was actually said or decided. No interpretation, no guesses about anyone's intentions or feelings.
+                    Under "Files and tools involved", list only real file names and tool names that were used, such as search_memory.
+                    If a section has nothing, write "- none". Shorter is better than padded.
                     Keep names, numbers, file names and decisions exactly. Leave out small talk.
                     """,
             },
