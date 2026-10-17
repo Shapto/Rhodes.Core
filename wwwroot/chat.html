@@ -7,6 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="rhodes.css">
+    <link rel="stylesheet" href="questions.css">
 </head>
 <body>
     <div class="page" id="page">
@@ -81,9 +82,12 @@
             <section class="readout-section">
                 <div class="readout-heading label">MODULES <button type="button" class="readout-close" id="readoutsClose" aria-label="Close readouts">×</button></div>
                 <dl class="readout-grid">
-                    <dt>core</dt><dd id="readoutCore">—</dd>
-                    <dt>model</dt><dd id="readoutModel">—</dd>
-                    <dt>speed</dt><dd id="readoutSpeed">—</dd>
+                    <dt>core</dt>
+                    <dd id="readoutCore">—</dd>
+                    <dt>model</dt>
+                    <dd id="readoutModel">—</dd>
+                    <dt>speed</dt>
+                    <dd id="readoutSpeed">—</dd>
                 </dl>
             </section>
 
@@ -94,10 +98,14 @@
                     <div class="context-tick"></div>
                 </div>
                 <dl class="readout-grid">
-                    <dt><span class="legend-swatch" style="background: var(--line-strong)"></span>system</dt><dd id="readoutContextSystem">—</dd>
-                    <dt><span class="legend-swatch" style="background: var(--warning)"></span>memory</dt><dd id="readoutContextMemory">—</dd>
-                    <dt><span class="legend-swatch" style="background: var(--accent)"></span>chat</dt><dd id="readoutContextChat">—</dd>
-                    <dt>total</dt><dd data-context-text>—</dd>
+                    <dt><span class="legend-swatch" style="background: var(--line-strong)"></span>system</dt>
+                    <dd id="readoutContextSystem">—</dd>
+                    <dt><span class="legend-swatch" style="background: var(--warning)"></span>memory</dt>
+                    <dd id="readoutContextMemory">—</dd>
+                    <dt><span class="legend-swatch" style="background: var(--accent)"></span>chat</dt>
+                    <dd id="readoutContextChat">—</dd>
+                    <dt>total</dt>
+                    <dd data-context-text>—</dd>
                 </dl>
             </section>
 
@@ -111,12 +119,18 @@
             <section class="readout-section">
                 <div class="readout-heading label">LAST REPLY</div>
                 <dl class="readout-grid">
-                    <dt>prompt</dt><dd id="readoutPrompt">—</dd>
-                    <dt>cached</dt><dd id="readoutCached">—</dd>
-                    <dt>generated</dt><dd id="readoutGenerated">—</dd>
-                    <dt>speed</dt><dd id="readoutReplySpeed">—</dd>
-                    <dt>time</dt><dd id="readoutTime">—</dd>
-                    <dt>model calls</dt><dd id="readoutCalls">—</dd>
+                    <dt>prompt</dt>
+                    <dd id="readoutPrompt">—</dd>
+                    <dt>cached</dt>
+                    <dd id="readoutCached">—</dd>
+                    <dt>generated</dt>
+                    <dd id="readoutGenerated">—</dd>
+                    <dt>speed</dt>
+                    <dd id="readoutReplySpeed">—</dd>
+                    <dt>time</dt>
+                    <dd id="readoutTime">—</dd>
+                    <dt>model calls</dt>
+                    <dd id="readoutCalls">—</dd>
                 </dl>
             </section>
         </aside>
@@ -129,6 +143,7 @@
     <script src="lib/highlight.min.js"></script>
     <script src="lib/highlight-powershell.min.js"></script>
     <script src="rhodes-common.js"></script>
+    <script src="questions.js"></script>
     <script src="rhodes.js"></script>
 </body>
 </html>

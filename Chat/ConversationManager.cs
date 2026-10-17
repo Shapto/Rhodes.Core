@@ -2,7 +2,7 @@
 
 namespace Rhodes.Core.Chat;
 
-public sealed record DisplayMessage(int Index, string Role, string Text, string? Reasoning, string? ToolName, JsonNode? Attachments, string? SentAt, JsonNode? Statistics);
+public sealed record DisplayMessage(int Index, string Role, string Text, string? Reasoning, string? ToolName, JsonNode? Attachments, string? SentAt, JsonNode? Statistics, JsonNode? Questions);
 public sealed record ConversationView(string Id, string Title, string Summary, int SummaryCoversThrough, int? ContextTokens, int ContextLimit, ContextSplit? ContextSplit, IReadOnlyList<DisplayMessage> Messages);
 
 /// <summary>
@@ -102,8 +102,9 @@ public sealed class ConversationManager
                 GetString(message["rhodes_tool_name"]),
                 message["rhodes_attachments"]?.DeepClone(),
                 GetString(message["rhodes_sent_at"]),
-                message["rhodes_statistics"]?.DeepClone()))
-            .Where(displayMessage => displayMessage.Text.Length > 0 || displayMessage.Reasoning is not null || displayMessage.Attachments is JsonArray { Count: > 0 })
+                message["rhodes_statistics"]?.DeepClone(),
+                message["rhodes_questions"]?.DeepClone()))
+            .Where(displayMessage => displayMessage.Text.Length > 0 || displayMessage.Reasoning is not null || displayMessage.Attachments is JsonArray { Count: > 0 } || displayMessage.Questions is not null)
             .ToList();
         return new ConversationView(conversation.Id, conversation.Title, conversation.Summary, conversation.SummaryCoversThrough, conversation.LastContextTokens, contextLimit, EstimateContextSplit(conversation), displayMessages);
     }
@@ -112,4 +113,4 @@ public sealed class ConversationManager
     {
         return node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
     }
-}   
+}

@@ -62,6 +62,15 @@ public sealed class HeartbeatStore : IDisposable
         );
         """);
 
+        // When an entry was first brought into a chat; null until then (added after the first heartbeat release, hence the check).
+        using (var columnCommand = CreateCommand("SELECT COUNT(*) FROM pragma_table_info('journal_entries') WHERE name = 'reported_at';"))
+        {
+            if (Convert.ToInt64(columnCommand.ExecuteScalar()) == 0)
+            {
+                Execute("ALTER TABLE journal_entries ADD COLUMN reported_at INTEGER;");
+            }
+        }
+
         // A tick that was still running when the core stopped (or the laptop slept and the core was closed) never finished.
         Execute("UPDATE heartbeat_ticks SET outcome = $interrupted, note = 'The core stopped during this tick.' WHERE outcome = $running;",
             ("$interrupted", HeartbeatOutcomes.Interrupted),
@@ -171,6 +180,50 @@ public sealed class HeartbeatStore : IDisposable
             }
 
             return entries;
+        }
+    }
+
+    /// <summary>
+    /// The newest entries not yet brought into a chat, oldest first so they read in order.
+    /// </summary>
+    public IReadOnlyList<JournalEntry> ListUnreportedJournal(int limit)
+    {
+        lock (databaseLock)
+        {
+            using var command = CreateCommand("SELECT id, tick_id, written_at, text FROM journal_entries WHERE reported_at IS NULL ORDER BY written_at DESC LIMIT $limit;",
+                ("$limit", limit));
+            using var reader = command.ExecuteReader();
+            var entries = new List<JournalEntry>();
+            while (reader.Read())
+            {
+                entries.Add(new JournalEntry(
+                    reader.GetInt64(0),
+                    reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                    DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)).ToLocalTime(),
+                    reader.GetString(3)));
+            }
+
+            entries.Reverse();
+            return entries;
+        }
+    }
+
+    /// <summary>
+    /// Marks entries as brought into a chat. Older unreported entries beyond the ones shown are marked too, so they don't trickle in later.
+    /// </summary>
+    public void MarkJournalReported(IEnumerable<long> entryIds)
+    {
+        var newestShownId = entryIds.DefaultIfEmpty(0).Max();
+        if (newestShownId == 0)
+        {
+            return;
+        }
+
+        lock (databaseLock)
+        {
+            Execute("UPDATE journal_entries SET reported_at = $now WHERE reported_at IS NULL AND id <= $newestShownId;",
+                ("$now", DateTimeOffset.Now.ToUnixTimeMilliseconds()),
+                ("$newestShownId", newestShownId));
         }
     }
 

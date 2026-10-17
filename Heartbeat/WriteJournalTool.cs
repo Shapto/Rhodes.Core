@@ -26,7 +26,7 @@ public sealed class WriteJournalTool : ICoreTool
     public string Name => "write_journal";
 
     public string Description =>
-        "Write one short entry in your journal: something you noticed, wondered about, or want to bring up with Shapto next time. " +
+        "Write one short entry in your journal: something you noticed or thought about, as a note to yourself (not a to-do list or questions for Shapto). " +
         "Shapto can read it on the dashboard. A few sentences, in your own voice. Not for facts about Shapto; those belong in memory.";
 
     public JsonObject ParametersSchema => new()

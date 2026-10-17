@@ -28,6 +28,9 @@ builder.Services.AddSingleton<ICoreTool, WebSearchTool>();
 builder.Services.AddSingleton<ICoreTool, WebFetchTool>();
 builder.Services.AddSingleton<ICoreTool, SearchDocumentTool>();
 builder.Services.AddSingleton<ICoreTool, ReadDocumentTool>();
+builder.Services.AddSingleton<ICoreTool, SearchChatsTool>();
+builder.Services.AddSingleton<ICoreTool, ReadChatTool>();
+builder.Services.AddSingleton<ICoreTool, AskShaptoTool>();
 builder.Services.AddSingleton(serviceProvider => new WebReader(builder.Configuration["GitHub:Token"], serviceProvider.GetRequiredService<ILogger<WebReader>>()));
 
 var personaPath = builder.Configuration["Persona:Path"] ?? Path.Combine(Path.GetDirectoryName(databasePath)!, "persona.md");
@@ -58,6 +61,7 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     conversationStore,
     serviceProvider.GetRequiredService<UploadStore>(),
     serviceProvider.GetRequiredService<DocumentStore>(),
+    serviceProvider.GetRequiredService<HeartbeatStore>(),
     serviceProvider.GetServices<ICoreTool>(),
     personaPath,
     builder.Configuration.GetValue("Chat:MaximumThinkingCharacters", 24000),

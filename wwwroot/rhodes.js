@@ -663,6 +663,10 @@ function buildConversationView(conversationView) {
             const isInterimText = nextMessage && nextMessage.role === 'tool';
             if (displayMessage.text && isInterimText) addInterimNote(closureMessage, displayMessage.text);
             else if (displayMessage.text) createAnswer(closureMessage.bodyElement, null, displayMessage.text);
+            if (displayMessage.questions) {
+                const isAnswered = conversationView.messages.slice(messagePosition + 1).some(laterMessage => laterMessage.role === 'user');
+                addQuestionCard(closureMessage, displayMessage.questions, isAnswered);
+            }
             if (displayMessage.sentAt) showSentTime(closureMessage.sentTimeElement, displayMessage.sentAt);
             if (displayMessage.statistics) {
                 closureMessage.metaLine.textContent = describeStatistics(displayMessage.statistics, '');
@@ -832,6 +836,7 @@ document.addEventListener('visibilitychange', () => {
 
 async function sendMessage(messageText, attachmentsToSend, options) {
     const regenerate = options && options.regenerate;
+    closeOpenQuestionCards();
     const attachmentIds = attachmentsToSend.filter(attachment => attachment.id).map(attachment => attachment.id);
     const userMessage = createUserMessage(messagesElement, messageText, attachmentsToSend, new Date().toISOString(), false);
     const closureMessage = createClosureMessage(messagesElement, false);
@@ -879,6 +884,12 @@ async function sendMessage(messageText, attachmentsToSend, options) {
                     addMemoryChip(closureMessage, memoryLine);
                     addTurnMemory(memoryLine, false);
                 }
+                break;
+            case 'journal':
+                for (const entryText of JSON.parse(chatEvent.text)) addJournalChip(closureMessage, entryText);
+                break;
+            case 'questions':
+                addQuestionCard(closureMessage, JSON.parse(chatEvent.text), false);
                 break;
             case 'attachments':
                 if (userMessage.attachmentRow) userMessage.attachmentRow.remove();

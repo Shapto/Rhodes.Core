@@ -1,0 +1,144 @@
+/* Chat page: Closure's question card (ask_shapto) and the journal chip. Uses the tokens from rhodes.css. */
+
+.question-card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-top: 4px;
+    padding: 14px 16px;
+    background: var(--panel-raised);
+    border-top: 2px solid var(--accent);
+}
+
+    .question-card.answered {
+        border-top-color: var(--line-strong);
+    }
+
+.question-card-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+}
+
+    .question-card.answered .question-card-header {
+        color: var(--text-faint);
+    }
+
+.question-card-state {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    font-weight: 400;
+    color: var(--text-faint);
+}
+
+.question {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.question-prompt {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 15px;
+    color: var(--text-strong);
+}
+
+.question-number {
+    flex: none;
+    min-width: 18px;
+    font-size: 12px;
+    color: var(--accent);
+}
+
+.question-hint {
+    font-size: 11px;
+    color: var(--text-faint);
+}
+
+.question-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-left: 28px;
+}
+
+.question-option {
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid var(--line-strong);
+    background: transparent;
+    color: var(--text-body);
+    font: 14px Barlow, sans-serif;
+    cursor: pointer;
+}
+
+    .question-option:hover:not(:disabled) {
+        border-color: var(--accent);
+        color: var(--text-strong);
+    }
+
+    .question-option[aria-pressed="true"] {
+        border-color: var(--accent);
+        background: var(--chip);
+        color: var(--accent);
+    }
+
+    .question-option:disabled {
+        cursor: default;
+        opacity: 0.55;
+    }
+
+        .question-option:disabled[aria-pressed="true"] {
+            opacity: 1;
+        }
+
+.question-free-text {
+    margin-left: 28px;
+    min-height: 34px;
+    box-sizing: border-box;
+    width: calc(100% - 28px);
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    background: var(--ground);
+    color: var(--text-strong);
+    font: 14px Barlow, sans-serif;
+}
+
+    .question-free-text::placeholder {
+        color: var(--text-faint);
+    }
+
+    .question-free-text:disabled {
+        opacity: 0.55;
+    }
+
+.question-card-footer {
+    display: flex;
+    justify-content: flex-end;
+}
+
+    .question-card-footer .send[hidden] {
+        display: none;
+    }
+
+@media (max-width: 560px) {
+    .question-options {
+        padding-left: 0;
+    }
+
+    .question-free-text {
+        margin-left: 0;
+        width: 100%;
+    }
+}
+
+.journal-chip .dot {
+    color: var(--accent-link);
+}

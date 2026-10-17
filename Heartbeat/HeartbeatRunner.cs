@@ -22,7 +22,7 @@ public sealed class HeartbeatRunner
     private const int MaximumMessageCharacters = 300;
     private const int MaximumAnswerCharacters = 4000;
 
-    private static readonly string[] OfflineToolNames = ["search_memory", "search_document", "read_document"];
+    private static readonly string[] OfflineToolNames = ["search_memory", "search_chats", "read_chat", "search_document", "read_document"];
     private static readonly string[] WebToolNames = ["web_search", "web_fetch"];
 
     private readonly LmStudioClient lmStudioClient;
@@ -218,7 +218,7 @@ public sealed class HeartbeatRunner
         builder.AppendLine("What you can do now:");
         builder.AppendLine("- Nothing. Most of the time that's the right answer.");
         builder.AppendLine($"- Look something up ({lookupTools}) if a chat left a question open that you could answer better next time.");
-        builder.AppendLine("- Write one journal entry with write_journal: something you noticed, wondered about, or want to bring up with Shapto. Only if it's worth reading.");
+        builder.AppendLine("- Write one journal entry with write_journal: something you noticed or thought about, as a note to yourself. Not a to-do list or questions for Shapto. Only if it's worth reading.");
         builder.AppendLine("You can't message Shapto, save memories or change anything from here, so don't claim you did. Don't invent events.");
         builder.AppendLine("End with one short line saying what you did, like \"Nothing to do.\" or \"Wrote about the workbench idea.\"");
         return builder.ToString();

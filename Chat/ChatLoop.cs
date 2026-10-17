@@ -5,7 +5,9 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Rhodes.Core.Documents;
+using Rhodes.Core.Heartbeat;
 using static Rhodes.Core.Chat.LmStudioClient;
 
 namespace Rhodes.Core.Chat;
@@ -14,7 +16,7 @@ namespace Rhodes.Core.Chat;
 /// Runs one turn: stamps the message, injects memories, then calls the model and its tools
 /// until she answers in plain text or the step limit is reached.
 /// </summary>
-public sealed class ChatLoop
+public sealed partial class ChatLoop
 {
     private const int MaximumToolSteps = 10;
     private const int AutoInjectCount = 3;
@@ -22,6 +24,11 @@ public sealed class ChatLoop
     private const int AutoInjectMaximumCharacters = 1500;
     private const int InlineAttachmentMaximumTokens = 5000;
     private const double InlineAttachmentMaximumShareOfFreeContext = 0.15;
+    private const int MaximumReportedJournalEntries = 3;
+    private const int MaximumReportedJournalCharacters = 600;
+    private const int AnnouncementTailCharacters = 250;
+    private const string OutOfToolsNote = "[Rhodes: you've used all your tool calls for this message. Answer now with what you found, and say plainly what you didn't get to, so Shapto can tell you to continue.]";
+    private const string UnfinishedActionNudge = "[Rhodes: your reply ends by saying you'll do something, but you didn't call a tool. If you meant to, call it now. If not, just answer without promising it.]";
 
     private readonly LmStudioClient lmStudioClient;
     private readonly MemoryRanker memoryRanker;
@@ -34,9 +41,11 @@ public sealed class ChatLoop
     private readonly UploadStore uploadStore;
     private readonly int contextTokens;
     private readonly DocumentStore documentStore;
+    private readonly HeartbeatStore heartbeatStore;
 
-    public ChatLoop(LmStudioClient lmStudioClient, MemoryRanker memoryRanker, ConversationStore conversationStore, UploadStore uploadStore, DocumentStore documentStore, IEnumerable<ICoreTool> tools, string personaPath, int maximumThinkingCharacters, int contextTokens, ILogger<ChatLoop> logger)
+    public ChatLoop(LmStudioClient lmStudioClient, MemoryRanker memoryRanker, ConversationStore conversationStore, UploadStore uploadStore, DocumentStore documentStore, HeartbeatStore heartbeatStore, IEnumerable<ICoreTool> tools, string personaPath, int maximumThinkingCharacters, int contextTokens, ILogger<ChatLoop> logger)
     {
+        this.heartbeatStore = heartbeatStore;
         this.uploadStore = uploadStore;
         this.documentStore = documentStore;
         this.contextTokens = contextTokens;
@@ -54,6 +63,7 @@ public sealed class ChatLoop
     {
         await conversation.TurnLock.WaitAsync(cancellationToken);
         var messageCountBeforeTurn = conversation.Messages.Count;
+        ToolContext.CurrentConversationId = conversation.Id;
         try
         {
             var stopwatch = Stopwatch.StartNew();
@@ -81,7 +91,14 @@ public sealed class ChatLoop
                 await EmitAsync(onEvent, new ChatEvent("memories", JsonSerializer.Serialize(injectedMemories)));
             }
 
-            var memoryBlock = BuildMemoryBlock(injectedMemories);
+            // Journal entries she wrote while Shapto was away and hasn't brought into a chat yet; each is shown once.
+            var unreportedJournalEntries = heartbeatStore.ListUnreportedJournal(MaximumReportedJournalEntries);
+            if (unreportedJournalEntries.Count > 0)
+            {
+                await EmitAsync(onEvent, new ChatEvent("journal", JsonSerializer.Serialize(unreportedJournalEntries.Select(journalEntry => journalEntry.Text), JsonSerializerOptions.Web)));
+            }
+
+            var memoryBlock = BuildJournalBlock(unreportedJournalEntries) + BuildMemoryBlock(injectedMemories);
             var userContent = BuildUserContent(messageText + attachmentText, clientName, now, conversation.LastUserMessageAt, conversation.CreatedAt, memoryBlock);
             conversation.Messages.Add(new JsonObject
             {
@@ -102,11 +119,29 @@ public sealed class ChatLoop
             var generatedTokens = 0;
             var modelCalls = 0;
             var completedToolCalls = new HashSet<string>();
+            string? announcedAction = null;
+            var announcedReasoning = "";
+            var nudgeUsed = false;
 
             for (var stepNumber = 0; stepNumber <= MaximumToolSteps; stepNumber++)
             {
                 var offerTools = stepNumber < MaximumToolSteps;
                 var requestMessages = BuildRequestMessages(systemPrompt, conversation);
+                var stepThinkingLevel = thinkingLevel;
+                if (announcedAction is not null)
+                {
+                    // Not stored: the nudge only lives in this one request. If she calls a tool now, her announcement becomes
+                    // that call's text, exactly as if she had called it the first time.
+                    requestMessages.Add(new JsonObject { ["role"] = "assistant", ["content"] = announcedAction });
+                    requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = UnfinishedActionNudge });
+                    stepThinkingLevel = thinkingLevel == ThinkingLevel.Off ? ThinkingLevel.Off : ThinkingLevel.Light;
+                }
+
+                if (!offerTools)
+                {
+                    // Without this she doesn't know the tools are gone, and tends to type her next call out as text.
+                    requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = OutOfToolsNote });
+                }
                 var thinkingFilter = new StreamingThinkingFilter();
                 var thinkingCharacters = 0;
                 var separateReasoningSeen = false;
@@ -115,7 +150,7 @@ public sealed class ChatLoop
                 var responseMessage = await lmStudioClient.StreamCompletionAsync(
                     requestMessages,
                     offerTools ? (JsonArray)toolDefinitions.DeepClone() : null,
-                    thinkingLevel,
+                    stepThinkingLevel,
                     async (deltaKind, deltaText) =>
                     {
                         if (deltaKind == LmStudioClient.ReasoningDelta)
@@ -187,11 +222,14 @@ public sealed class ChatLoop
                     conversation.Messages.Add(new JsonObject
                     {
                         ["role"] = "assistant",
-                        ["content"] = answer,
+                        ["content"] = JoinParts(announcedAction, answer),
                         ["tool_calls"] = toolCalls.DeepClone(),
-                        ["rhodes_reasoning"] = reasoning,
+                        ["rhodes_reasoning"] = JoinParts(announcedReasoning, reasoning),
                     });
+                    announcedAction = null;
+                    announcedReasoning = "";
 
+                    var firstStepIndex = toolSteps.Count;
                     foreach (var toolCall in toolCalls)
                     {
                         await EmitAsync(onEvent, new ChatEvent("status", $"running {GetString(toolCall!["function"]?["name"])}…"));
@@ -207,18 +245,56 @@ public sealed class ChatLoop
                         });
                     }
 
+                    // ask_shapto ends the turn: the card is the reply, and the answers arrive as Shapto's next message.
+                    var questionStep = toolSteps
+                        .Skip(firstStepIndex)
+                        .FirstOrDefault(step => step.ToolName == AskShaptoTool.ToolName && !step.Result.StartsWith("Error", StringComparison.Ordinal));
+                    if (questionStep is null)
+                    {
+                        continue;
+                    }
+
+                    var questions = AskShaptoTool.ReadQuestions(questionStep.Arguments);
+                    await EmitAsync(onEvent, new ChatEvent("questions", questions.ToJsonString()));
+                    return FinishTurn(AskShaptoTool.DescribeForHistory(questions), "", questions);
+                }
+
+                // "Let me look that up." with no tool call: one nudge per turn to either do it or answer properly.
+                if (offerTools && !nudgeUsed && LooksLikeUnfinishedAction(answer))
+                {
+                    nudgeUsed = true;
+                    announcedAction = answer;
+                    announcedReasoning = reasoning;
+                    logger.LogInformation("Chat {ConversationId}: reply announced an action without a tool call; nudging once", conversation.Id);
+                    await EmitAsync(onEvent, new ChatEvent("content", "\n\n"));
                     continue;
                 }
 
+                return FinishTurn(JoinParts(announcedAction, answer), JoinParts(announcedReasoning, reasoning), null);
+            }
+
+            throw new InvalidOperationException("The tool loop ended without an answer.");
+
+            // Saves her final message (an answer, or the question card) and the turn's numbers.
+            TurnResult FinishTurn(string answerText, string reasoningText, JsonArray? questions)
+            {
                 var statistics = new TurnStatistics(lastPromptTokens, lastCachedTokens, generatedTokens, lastTokensPerSecond, Math.Round(stopwatch.Elapsed.TotalSeconds, 1), modelCalls);
-                conversation.Messages.Add(new JsonObject
+                var finalMessage = new JsonObject
                 {
                     ["role"] = "assistant",
-                    ["content"] = answer,
-                    ["rhodes_reasoning"] = reasoning,
+                    ["content"] = answerText,
+                    ["rhodes_reasoning"] = reasoningText,
                     ["rhodes_sent_at"] = DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture),
                     ["rhodes_statistics"] = JsonSerializer.SerializeToNode(statistics, JsonSerializerOptions.Web),
-                });
+                };
+                if (questions is not null)
+                {
+                    // The page draws the card from rhodes_questions; the plain-text version in content is for the model.
+                    finalMessage["rhodes_display_text"] = "";
+                    finalMessage["rhodes_questions"] = questions.DeepClone();
+                }
+
+                conversation.Messages.Add(finalMessage);
                 conversation.LastUserMessageAt = now;
 
                 if (conversation.Title.Length == 0)
@@ -227,10 +303,9 @@ public sealed class ChatLoop
                 }
 
                 conversationStore.SaveNewMessages(conversation, messageCountBeforeTurn);
-                return new TurnResult(answer, string.Join("\n\n", reasoningParts), toolSteps, injectedMemories, stopwatch.Elapsed.TotalSeconds, thinkingLevel, statistics);
+                heartbeatStore.MarkJournalReported(unreportedJournalEntries.Select(journalEntry => journalEntry.Id));
+                return new TurnResult(answerText, string.Join("\n\n", reasoningParts), toolSteps, injectedMemories, stopwatch.Elapsed.TotalSeconds, thinkingLevel, statistics);
             }
-
-            throw new InvalidOperationException("The tool loop ended without an answer.");
         }
         catch
         {
@@ -394,6 +469,30 @@ public sealed class ChatLoop
     }
 
     /// <summary>
+    /// True when the end of a reply promises an action ("Let me pull the wiki pages.") instead of answering or asking.
+    /// Only the last few sentences count, so "I'll check later" in the middle of a real answer doesn't trigger it.
+    /// </summary>
+    private static bool LooksLikeUnfinishedAction(string answer)
+    {
+        var trimmedAnswer = answer.TrimEnd();
+        if (trimmedAnswer.Length == 0 || trimmedAnswer.EndsWith('?'))
+        {
+            return false;
+        }
+
+        var tail = trimmedAnswer.Length > AnnouncementTailCharacters ? trimmedAnswer[^AnnouncementTailCharacters..] : trimmedAnswer;
+        return UnfinishedActionPattern().IsMatch(tail);
+    }
+
+    private static string JoinParts(string? firstPart, string secondPart)
+    {
+        return string.IsNullOrWhiteSpace(firstPart) ? secondPart : string.IsNullOrWhiteSpace(secondPart) ? firstPart : firstPart + "\n\n" + secondPart;
+    }
+
+    [GeneratedRegex(@"\b(?:let me|let's|i'll|i will|i'm going to|going to|time to)\s+(?:\w+\s+){0,3}?(?:check|look|search|fetch|pull|read|open|find|grab|dig|verify|fix|research|browse|try|go through|investigate)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex UnfinishedActionPattern();
+
+    /// <summary>
     /// "/quick ..." turns thinking off and "/think ..." forces full thinking; the command itself is removed.
     /// </summary>
     private static (string MessageText, ThinkingLevel? ForcedLevel) ParseThinkingCommand(string userText)
@@ -542,6 +641,28 @@ public sealed class ChatLoop
         builder.Append(memoryBlock);
 
         builder.Append(userText);
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Her unreported journal entries, so she can follow up on what she noted while Shapto was away. Empty when there are none.
+    /// </summary>
+    private static string BuildJournalBlock(IReadOnlyList<JournalEntry> journalEntries)
+    {
+        if (journalEntries.Count == 0)
+        {
+            return "";
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("[Background: notes from your journal, written while Shapto was away. Don't act on them, search for them or ask about them unless Shapto's message is about the same thing:]");
+        foreach (var journalEntry in journalEntries)
+        {
+            var entryText = journalEntry.Text.Length > MaximumReportedJournalCharacters ? journalEntry.Text[..MaximumReportedJournalCharacters] + "…" : journalEntry.Text;
+            builder.Append("- ").Append(journalEntry.WrittenAt.ToString("ddd HH:mm", CultureInfo.InvariantCulture)).Append(": ").AppendLine(entryText.ReplaceLineEndings(" "));
+        }
+
+        builder.AppendLine();
         return builder.ToString();
     }
 
