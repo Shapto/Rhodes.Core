@@ -8,6 +8,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Rhodes.Core.Documents;
 using Rhodes.Core.Heartbeat;
+using Rhodes.Core.Approvals;
 using static Rhodes.Core.Chat.LmStudioClient;
 
 namespace Rhodes.Core.Chat;
@@ -33,6 +34,7 @@ public sealed partial class ChatLoop
     private const string OutOfToolsNote = "[Rhodes: you've used all your tool calls for this message. Answer now with what you found, and say plainly what you didn't get to, so Shapto can tell you to continue.]";
     private const string ContextFullNote = "[Rhodes: the chat's context is nearly full, so no more tool calls this message. Answer now with what you found, and say plainly what you didn't get to; the chat gets compacted after your answer and Shapto can tell you to continue.]";
     private const string UnfinishedActionNudge = "[Rhodes: your reply ends by saying you'll do something, but you didn't call a tool. If you meant to, call it now. If not, just answer without promising it.]";
+    private const string EmptyAnswerNudge = "[Rhodes: you stopped without answering. Carry on with what you were doing (call the next tool), or tell Shapto what you found and what's still open.]";
 
     private readonly LmStudioClient lmStudioClient;
     private readonly MemoryRanker memoryRanker;
@@ -46,10 +48,12 @@ public sealed partial class ChatLoop
     private readonly int contextTokens;
     private readonly DocumentStore documentStore;
     private readonly HeartbeatStore heartbeatStore;
+    private readonly ApprovalService approvalService;
 
-    public ChatLoop(LmStudioClient lmStudioClient, MemoryRanker memoryRanker, ConversationStore conversationStore, UploadStore uploadStore, DocumentStore documentStore, HeartbeatStore heartbeatStore, IEnumerable<ICoreTool> tools, string personaPath, int maximumThinkingCharacters, int contextTokens, ILogger<ChatLoop> logger)
+    public ChatLoop(LmStudioClient lmStudioClient, MemoryRanker memoryRanker, ConversationStore conversationStore, UploadStore uploadStore, DocumentStore documentStore, HeartbeatStore heartbeatStore, ApprovalService approvalService, IEnumerable<ICoreTool> tools, string personaPath, int maximumThinkingCharacters, int contextTokens, ILogger<ChatLoop> logger)
     {
         this.heartbeatStore = heartbeatStore;
+        this.approvalService = approvalService;
         this.uploadStore = uploadStore;
         this.documentStore = documentStore;
         this.contextTokens = contextTokens;
@@ -68,6 +72,7 @@ public sealed partial class ChatLoop
         await conversation.TurnLock.WaitAsync(cancellationToken);
         var messageCountBeforeTurn = conversation.Messages.Count;
         ToolContext.CurrentConversationId = conversation.Id;
+        ToolContext.EmitEvent = onEvent;
         try
         {
             var stopwatch = Stopwatch.StartNew();
@@ -126,6 +131,7 @@ public sealed partial class ChatLoop
             string? announcedAction = null;
             var announcedReasoning = "";
             var nudgeUsed = false;
+            var currentNudge = UnfinishedActionNudge;
             var previousRequestCharacters = 0;
             int? previousPromptTokens = null;
 
@@ -144,7 +150,7 @@ public sealed partial class ChatLoop
                     // Not stored: the nudge only lives in this one request. If she calls a tool now, her announcement becomes
                     // that call's text, exactly as if she had called it the first time.
                     requestMessages.Add(new JsonObject { ["role"] = "assistant", ["content"] = announcedAction });
-                    requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = UnfinishedActionNudge });
+                    requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = currentNudge });
                     stepThinkingLevel = thinkingLevel == ThinkingLevel.Off ? ThinkingLevel.Off : ThinkingLevel.Light;
                 }
 
@@ -273,13 +279,20 @@ public sealed partial class ChatLoop
                 }
 
                 // "Let me look that up." with no tool call: one nudge per turn to either do it or answer properly.
-                if (offerTools && !nudgeUsed && LooksLikeUnfinishedAction(answer))
+                // An empty answer after tool calls means she lost the thread mid-task; same one nudge.
+                var stoppedSilently = answer.Trim().Length == 0 && toolSteps.Count > 0;
+                if (offerTools && !nudgeUsed && (stoppedSilently || LooksLikeUnfinishedAction(answer)))
                 {
                     nudgeUsed = true;
+                    currentNudge = stoppedSilently ? EmptyAnswerNudge : UnfinishedActionNudge;
                     announcedAction = answer;
                     announcedReasoning = reasoning;
                     logger.LogInformation("Chat {ConversationId}: reply announced an action without a tool call; nudging once", conversation.Id);
-                    await EmitAsync(onEvent, new ChatEvent("content", "\n\n"));
+                    if (!stoppedSilently)
+                    {
+                        await EmitAsync(onEvent, new ChatEvent("content", "\n\n"));
+                    }
+
                     continue;
                 }
 
@@ -573,6 +586,12 @@ public sealed partial class ChatLoop
         try
         {
             using var argumentsDocument = JsonDocument.Parse(string.IsNullOrWhiteSpace(argumentsText) ? "{}" : argumentsText);
+            var refusal = await approvalService.CheckToolAsync(tool, argumentsDocument.RootElement, ToolContext.EmitEvent, cancellationToken);
+            if (refusal is not null)
+            {
+                return new ToolStep(toolName, argumentsText, refusal);
+            }
+
             var result = await tool.ExecuteAsync(argumentsDocument.RootElement, cancellationToken);
             return new ToolStep(toolName, argumentsText, result);
         }

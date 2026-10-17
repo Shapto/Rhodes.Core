@@ -24,7 +24,7 @@ function showBenchView(viewName) {
     // Each view loads the first time it's opened, so the home page doesn't ask the core for everything up front.
     if (loadedBenchViews.has(viewName)) return Promise.resolve();
     loadedBenchViews.add(viewName);
-    const viewLoaders = { tools: loadTools, documents: loadDocuments, chats: loadInternalsChats, legacy: loadLegacyBreakdown };
+    const viewLoaders = { tools: loadTools, documents: loadDocuments, chats: loadInternalsChats, legacy: loadLegacyBreakdown, permissions: loadPermissions };
     return viewLoaders[viewName] ? viewLoaders[viewName]() : Promise.resolve();
 }
 
@@ -399,6 +399,50 @@ async function showLegacyCategory(category, tableRow) {
         addElement(rowElement, 'p', 'memory-content clamped-two', categoryMemory.content);
     }
     memoriesElement.replaceChildren(memoriesFragment);
+}
+
+// ---------- permissions ----------
+
+const permissionKindLabels = { web: 'web', write: 'file writes', command: 'commands' };
+
+async function loadPermissions() {
+    const rowsElement = document.getElementById('permissionRows');
+    let rules;
+    try {
+        rules = await fetchJson('/approvals/rules');
+    } catch (loadError) {
+        rowsElement.replaceChildren();
+        addElement(addElement(rowsElement, 'tr'), 'td', 'readout-empty', "couldn't load: " + loadError.message).colSpan = 4;
+        return;
+    }
+
+    const rowsFragment = document.createDocumentFragment();
+    for (const rule of rules) {
+        const tableRow = addElement(rowsFragment, 'tr');
+        addElement(tableRow, 'td', 'mono', permissionKindLabels[rule.category] || rule.category);
+        addElement(tableRow, 'td', 'mono', rule.key);
+        addElement(tableRow, 'td', 'mono', formatAge(rule.createdAt));
+        const actionsCell = addElement(tableRow, 'td', 'table-actions');
+        const removeButton = addElement(actionsCell, 'button', 'turn-action danger', 'REMOVE');
+        removeButton.type = 'button';
+        removeButton.addEventListener('click', async () => {
+            removeButton.disabled = true;
+            try {
+                const response = await fetch('/approvals/rules/' + encodeURIComponent(rule.id), { method: 'DELETE' });
+                if (!response.ok && response.status !== 404) throw new Error(await readErrorText(response));
+            } catch (removeError) {
+                removeButton.disabled = false;
+                await showNotice("COULDN'T REMOVE", removeError.message);
+                return;
+            }
+            loadPermissions();
+        });
+    }
+    if (rules.length === 0) {
+        const emptyCell = addElement(addElement(rowsFragment, 'tr'), 'td', 'readout-empty', 'nothing yet · she asks every time');
+        emptyCell.colSpan = 4;
+    }
+    rowsElement.replaceChildren(rowsFragment);
 }
 
 // ---------- wiring ----------

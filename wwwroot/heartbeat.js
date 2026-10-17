@@ -6,7 +6,7 @@ const awayTickCount = 12;
 const journalPageSize = 3;
 const heartbeatRefreshMilliseconds = 60000;
 const heartbeatRunningRefreshMilliseconds = 5000;
-const outcomeLabels = { nothing: 'QUIET', looked: 'LOOKED', journal: 'JOURNAL', interrupted: 'STOPPED', failed: 'FAILED', running: 'AWAKE' };
+const outcomeLabels = { nothing: 'QUIET', looked: 'LOOKED', journal: 'JOURNAL', card: 'BRIEF CARD', interrupted: 'STOPPED', failed: 'FAILED', running: 'AWAKE' };
 
 const awayListElement = document.getElementById('awayList');
 const journalListElement = document.getElementById('journalList');
@@ -54,7 +54,7 @@ async function refreshHeartbeat() {
     const tickAt = heartbeatStatus ? heartbeatStatus.lastTickAt + '|' + heartbeatStatus.running : null;
     if (heartbeatStatus && tickAt !== lastSeenTickAt) {
         lastSeenTickAt = tickAt;
-        await Promise.all([loadAwayLog(), loadJournal(true)]);
+        await Promise.all([loadAwayLog(), loadJournal(true), loadBrief()]);
     }
 
     const nextRefresh = heartbeatStatus && heartbeatStatus.running ? heartbeatRunningRefreshMilliseconds : heartbeatRefreshMilliseconds;
@@ -225,6 +225,80 @@ async function deleteJournalEntry(journalEntry, rowElement) {
     }
     rowElement.remove();
     loadJournal(true);
+}
+
+// ---------- morning brief ----------
+
+const briefActions = [
+    { status: 'useful', label: 'USEFUL' },
+    { status: 'not_useful', label: 'NOT USEFUL' },
+    { status: 'saved', label: 'SAVE' },
+];
+
+async function loadBrief() {
+    const briefPanel = document.getElementById('briefPanel');
+    let briefCards;
+    try {
+        const response = await fetch('/brief');
+        if (!response.ok) throw new Error(await readErrorText(response));
+        briefCards = await response.json();
+    } catch {
+        return;
+    }
+
+    // An empty brief takes no space; the panel appears once she leaves something.
+    briefPanel.hidden = briefCards.length === 0;
+    document.getElementById('briefNote').textContent = briefCards.length + (briefCards.length === 1 ? ' card' : ' cards') + ' · unsaved cards go after 3 days';
+    const cardsFragment = document.createDocumentFragment();
+    for (const briefCard of briefCards) cardsFragment.appendChild(createBriefCard(briefCard));
+    document.getElementById('briefCards').replaceChildren(cardsFragment);
+}
+
+function createBriefCard(briefCard) {
+    const cardElement = document.createElement('article');
+    cardElement.className = 'brief-card';
+    cardElement.dataset.status = briefCard.status;
+    const topLine = addElement(cardElement, 'div', 'memory-top');
+    addElement(topLine, 'span', null, formatAge(briefCard.createdAt));
+    if (briefCard.status !== 'new') addElement(topLine, 'span', 'brief-status', briefCard.status === 'not_useful' ? 'NOT USEFUL' : briefCard.status.toUpperCase());
+    const dismissButton = addElement(topLine, 'button', 'brief-dismiss', '×');
+    dismissButton.type = 'button';
+    dismissButton.title = 'Remove from the brief';
+    dismissButton.addEventListener('click', () => updateBriefCard(briefCard, 'dismissed'));
+    addElement(cardElement, 'div', 'brief-title', briefCard.title);
+    addElement(cardElement, 'p', 'brief-body', briefCard.body);
+
+    const actionsLine = addElement(cardElement, 'div', 'brief-actions');
+    for (const { status, label } of briefActions) {
+        const actionButton = addElement(actionsLine, 'button', 'turn-action', label);
+        actionButton.type = 'button';
+        actionButton.setAttribute('aria-pressed', String(briefCard.status === status));
+        actionButton.addEventListener('click', () => updateBriefCard(briefCard, status));
+    }
+    const discussButton = addElement(actionsLine, 'button', 'turn-action', 'DISCUSS');
+    discussButton.type = 'button';
+    discussButton.title = 'Start a chat about this card';
+    discussButton.addEventListener('click', () => {
+        writeStorage(startMessageStorageKey, 'About your brief card "' + briefCard.title + '": ' + briefCard.body);
+        writeStorage(conversationStorageKey, null);
+        window.location.href = 'chat.html';
+    });
+    return cardElement;
+}
+
+async function updateBriefCard(briefCard, status) {
+    try {
+        const response = await fetch('/brief/' + encodeURIComponent(briefCard.id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status }),
+        });
+        if (!response.ok) throw new Error(await readErrorText(response));
+    } catch (updateError) {
+        await showNotice("COULDN'T UPDATE THE CARD", updateError.message);
+        return;
+    }
+    loadBrief();
 }
 
 // ---------- wiring ----------

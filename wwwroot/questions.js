@@ -119,3 +119,58 @@ function addJournalChip(closureMessage, entryText) {
     chipElement.appendChild(document.createTextNode('FROM HER JOURNAL · ' + (entryText.length > 90 ? entryText.slice(0, 90) + '…' : entryText)));
     chipElement.title = entryText;
 }
+
+// ---------- approval cards ----------
+
+const approvalCategoryLabels = { web: 'WEB', write: 'FILES', command: 'COMMAND' };
+
+/**
+ * A tool waiting for Shapto's OK. The turn is paused on the core until a button is pressed (or 10 minutes pass, which counts as deny).
+ */
+function addApprovalCard(closureMessage, approval, beforeElement) {
+    const cardElement = beforeElement ? createElementBefore(beforeElement, 'div', 'approval-card cut') : addElement(closureMessage.bodyElement, 'div', 'approval-card cut');
+    cardElement.dataset.category = approval.category;
+    const headerLine = addElement(cardElement, 'div', 'question-card-header label');
+    addElement(headerLine, 'span', null, 'NEEDS YOUR OK · ' + (approvalCategoryLabels[approval.category] || approval.category.toUpperCase()));
+    const stateLabel = addElement(headerLine, 'span', 'question-card-state mono', 'she is waiting');
+    addElement(cardElement, 'div', 'approval-title', approval.title);
+
+    const detailElement = addElement(cardElement, 'pre', 'approval-detail');
+    for (const detailLine of approval.detail.split('\n')) {
+        const lineClass = /^\+\s*\d/.test(detailLine) ? 'added' : /^-\s*\d/.test(detailLine) ? 'removed' : null;
+        addElement(detailElement, 'span', lineClass, detailLine + '\n');
+    }
+
+    const buttonsLine = addElement(cardElement, 'div', 'approval-buttons');
+    const decisions = [
+        { decision: 'once', label: 'ALLOW ONCE', className: 'send cut-small label' },
+        { decision: 'always', label: 'ALWAYS ALLOW ' + approval.alwaysLabel, className: 'turn-action approval-always' },
+        { decision: 'deny', label: 'DENY', className: 'turn-action danger' },
+    ];
+    const buttons = decisions.map(({ decision, label, className }) => {
+        const decisionButton = addElement(buttonsLine, 'button', className, label);
+        decisionButton.type = 'button';
+        decisionButton.addEventListener('click', () => answerApproval(decision, label));
+        return decisionButton;
+    });
+
+    async function answerApproval(decision, label) {
+        buttons.forEach(decisionButton => { decisionButton.disabled = true; });
+        try {
+            const response = await fetch('/approvals/' + encodeURIComponent(approval.id), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ decision }),
+            });
+            stateLabel.textContent = response.ok ? (decision === 'deny' ? 'DENIED' : decision === 'always' ? 'ALWAYS ALLOWED' : 'ALLOWED') : 'no longer waiting';
+        } catch {
+            stateLabel.textContent = "couldn't reach the core";
+            buttons.forEach(decisionButton => { decisionButton.disabled = false; });
+            return;
+        }
+        cardElement.classList.add('answered');
+        cardElement.dataset.decision = decision;
+    }
+
+    return cardElement;
+}

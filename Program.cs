@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Mvc;
+using Rhodes.Core.Approvals;
 using Rhodes.Core.Chat;
 using Rhodes.Core.Documents;
 using Rhodes.Core.Memory;
 using Rhodes.Core.Tools;
 using Rhodes.Core.Web;
+using Rhodes.Core.Workspace;
 using System.Reflection.PortableExecutable;
 using System.Text.Json;
 using Rhodes.Core.Heartbeat;
@@ -31,6 +33,19 @@ builder.Services.AddSingleton<ICoreTool, ReadDocumentTool>();
 builder.Services.AddSingleton<ICoreTool, SearchChatsTool>();
 builder.Services.AddSingleton<ICoreTool, ReadChatTool>();
 builder.Services.AddSingleton<ICoreTool, AskShaptoTool>();
+
+// Her workspace (a sandbox folder for code) and the approval cards that guard writes, commands and the web.
+var dataFolder = Path.GetDirectoryName(databasePath)!;
+builder.Services.AddSingleton(new WorkspaceFolder(builder.Configuration["Workspace:Path"] ?? Path.Combine(dataFolder, "workspace")));
+builder.Services.AddSingleton(serviceProvider => new ApprovalService(Path.Combine(dataFolder, "rhodes.db"), serviceProvider.GetRequiredService<ILogger<ApprovalService>>()));
+builder.Services.AddSingleton<ICoreTool, ListFilesTool>();
+builder.Services.AddSingleton<ICoreTool, ReadFileTool>();
+builder.Services.AddSingleton<ICoreTool, WriteFileTool>();
+builder.Services.AddSingleton<ICoreTool, EditFileTool>();
+builder.Services.AddSingleton<ICoreTool, DeleteFileTool>();
+builder.Services.AddSingleton<ICoreTool, RunCommandTool>();
+builder.Services.AddSingleton<ICoreTool, CloneRepoTool>();
+builder.Services.AddSingleton<ICoreTool, LittleHandyTool>();
 builder.Services.AddSingleton(serviceProvider => new WebReader(builder.Configuration["GitHub:Token"], serviceProvider.GetRequiredService<ILogger<WebReader>>()));
 
 var personaPath = builder.Configuration["Persona:Path"] ?? Path.Combine(Path.GetDirectoryName(databasePath)!, "persona.md");
@@ -62,6 +77,7 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     serviceProvider.GetRequiredService<UploadStore>(),
     serviceProvider.GetRequiredService<DocumentStore>(),
     serviceProvider.GetRequiredService<HeartbeatStore>(),
+    serviceProvider.GetRequiredService<ApprovalService>(),
     serviceProvider.GetServices<ICoreTool>(),
     personaPath,
     builder.Configuration.GetValue("Chat:MaximumThinkingCharacters", 24000),
@@ -79,6 +95,7 @@ builder.Services.AddSingleton(serviceProvider => new HeartbeatRunner(
     conversationStore,
     serviceProvider.GetRequiredService<ConversationManager>(),
     serviceProvider.GetRequiredService<ChatLoop>(),
+    serviceProvider.GetRequiredService<ApprovalService>(),
     serviceProvider.GetServices<ICoreTool>(),
     personaPath,
     builder.Configuration.GetValue("Heartbeat:AllowWeb", false),
@@ -351,6 +368,13 @@ app.MapPost("/tools/{toolName}", async (string toolName, JsonElement arguments, 
         return Results.NotFound($"No tool named {toolName}.");
     }
 
+    // Tools that write or run commands only run from a chat, where Shapto approves each call.
+    // Running them here would skip the approval card, for anyone on the network. Web tools are fine to try here.
+    if (tool is IApprovalRequired approvalRequired && approvalRequired.DescribeApproval(arguments) is { Category: not ApprovalCategories.Web })
+    {
+        return Results.Text($"Error: {toolName} changes files or runs commands, so it only runs from a chat with Closure, where you approve it.");
+    }
+
     try
     {
         return Results.Text(await tool.ExecuteAsync(arguments, cancellationToken));
@@ -378,5 +402,22 @@ app.MapPost("/heartbeat/run", async (HeartbeatService heartbeatService) =>
 app.MapGet("/journal", (int? limit, int? offset, HeartbeatStore heartbeatStore) =>
     Results.Ok(new { Total = heartbeatStore.CountJournal(), Entries = heartbeatStore.ListJournal(Math.Clamp(limit ?? 10, 1, 50), Math.Max(0, offset ?? 0)) }));
 app.MapDelete("/journal/{entryId:long}", (long entryId, HeartbeatStore heartbeatStore) => heartbeatStore.DeleteJournalEntry(entryId) ? Results.Ok() : Results.NotFound());
+
+app.MapPost("/approvals/{requestId}", (string requestId, ApprovalAnswer approvalAnswer, ApprovalService approvalService) =>
+{
+    var decision = approvalAnswer.Decision switch
+    {
+        "once" => ApprovalDecision.AllowOnce,
+        "always" => ApprovalDecision.AlwaysAllow,
+        _ => ApprovalDecision.Deny,
+    };
+    return approvalService.Resolve(requestId, decision) ? Results.Ok() : Results.NotFound("That request isn't waiting anymore (answered, timed out, or the reply was stopped).");
+});
+app.MapGet("/approvals/rules", (ApprovalService approvalService) => approvalService.ListRules());
+app.MapDelete("/approvals/rules/{ruleId:long}", (long ruleId, ApprovalService approvalService) => approvalService.DeleteRule(ruleId) ? Results.Ok() : Results.NotFound());
+
+app.MapGet("/brief", (HeartbeatStore heartbeatStore) => heartbeatStore.ListActiveBriefCards());
+app.MapPost("/brief/{cardId:long}", (long cardId, BriefCardUpdate briefCardUpdate, HeartbeatStore heartbeatStore) =>
+    !BriefCardStatuses.SetByShapto.Contains(briefCardUpdate.Status) ? Results.BadRequest("Status must be useful, not_useful, saved or dismissed.") : heartbeatStore.SetBriefCardStatus(cardId, briefCardUpdate.Status) ? Results.Ok() : Results.NotFound());
 
 app.Run();

@@ -891,6 +891,12 @@ async function sendMessage(messageText, attachmentsToSend, options) {
             case 'questions':
                 addQuestionCard(closureMessage, JSON.parse(chatEvent.text), false);
                 break;
+            case 'approval': {
+                const approval = JSON.parse(chatEvent.text);
+                addApprovalCard(closureMessage, approval, statusLine);
+                announceReplyIfHidden('Needs your OK: ' + approval.title);
+                break;
+            }
             case 'attachments':
                 if (userMessage.attachmentRow) userMessage.attachmentRow.remove();
                 userMessage.messageElement.attachments = JSON.parse(chatEvent.text);

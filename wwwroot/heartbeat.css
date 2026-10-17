@@ -23,12 +23,29 @@
         padding-bottom: 4px;
     }
 
-[data-outcome="nothing"] { --outcome-color: var(--line-strong); }
-[data-outcome="looked"] { --outcome-color: #8fc7ff; }
-[data-outcome="journal"] { --outcome-color: var(--accent); }
-[data-outcome="interrupted"] { --outcome-color: var(--warning); }
-[data-outcome="failed"] { --outcome-color: var(--danger); }
-[data-outcome="running"] { --outcome-color: var(--accent-link); }
+[data-outcome="nothing"] {
+    --outcome-color: var(--line-strong);
+}
+
+[data-outcome="looked"] {
+    --outcome-color: #8fc7ff;
+}
+
+[data-outcome="journal"] {
+    --outcome-color: var(--accent);
+}
+
+[data-outcome="interrupted"] {
+    --outcome-color: var(--warning);
+}
+
+[data-outcome="failed"] {
+    --outcome-color: var(--danger);
+}
+
+[data-outcome="running"] {
+    --outcome-color: var(--accent-link);
+}
 
 .outcome-badge {
     padding: 1px 6px;
@@ -44,10 +61,10 @@
     overflow-wrap: anywhere;
 }
 
-    .away-row.quiet .away-note {
-        font-size: 13px;
-        color: var(--text-faint);
-    }
+.away-row.quiet .away-note {
+    font-size: 13px;
+    color: var(--text-faint);
+}
 
 .away-trail-toggle {
     align-self: flex-start;
@@ -143,3 +160,77 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+
+/* ---------- morning brief ---------- */
+
+[data-outcome="card"] {
+    --outcome-color: #f0c38a;
+}
+
+.brief-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 8px;
+}
+
+.brief-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--panel-raised);
+    border-left: 2px solid #f0c38a;
+}
+
+    .brief-card[data-status="saved"] {
+        border-left-color: var(--accent);
+    }
+
+    .brief-card[data-status="not_useful"] {
+        opacity: 0.6;
+    }
+
+.brief-status {
+    color: var(--accent-link);
+    letter-spacing: 0.06em;
+}
+
+.brief-dismiss {
+    margin-left: auto;
+    border: 0;
+    background: none;
+    padding: 0 2px;
+    color: var(--text-faint);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+    .brief-dismiss:hover {
+        color: var(--danger);
+    }
+
+.brief-title {
+    font-size: 15px;
+    color: var(--text-strong);
+}
+
+.brief-body {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text-body);
+    overflow-wrap: anywhere;
+}
+
+.brief-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: auto;
+}
+
+    .brief-actions .turn-action[aria-pressed="true"] {
+        color: var(--accent);
+        border-color: var(--accent);
+    }

@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Rhodes.Core.Approvals;
 
 namespace Rhodes.Core.Tools
 {
@@ -11,7 +12,7 @@ namespace Rhodes.Core.Tools
     /// DuckDuckGo's HTML results page, the same source as the old LM Studio plugin, now with each result's snippet.
     /// Searches are spaced at least 2 seconds apart so DuckDuckGo doesn't start refusing them.
     /// </summary>
-    public sealed partial class WebSearchTool : ICoreTool
+    public sealed partial class WebSearchTool : ICoreTool, IApprovalRequired
     {
         private static readonly TimeSpan MinimumTimeBetweenSearches = TimeSpan.FromSeconds(2);
 
@@ -63,6 +64,15 @@ namespace Rhodes.Core.Tools
             },
             ["required"] = new JsonArray("query"),
         };
+
+        /// <summary>
+        /// Searches all go to DuckDuckGo, so "always allow" covers searching as a whole.
+        /// </summary>
+        public ApprovalRequest? DescribeApproval(JsonElement arguments)
+        {
+            var query = ToolArguments.GetOptionalString(arguments, "query")?.Trim();
+            return string.IsNullOrEmpty(query) ? null : new ApprovalRequest(ApprovalCategories.Web, "Search the web", query, "duckduckgo.com", "web searches");
+        }
 
         public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken)
         {

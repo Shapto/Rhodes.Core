@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Rhodes.Core.Approvals;
 using Rhodes.Core.Chat;
 using Rhodes.Core.Tools;
 
@@ -32,10 +33,12 @@ public sealed class HeartbeatRunner
     private readonly ChatLoop chatLoop;
     private readonly IReadOnlyList<ICoreTool> readOnlyTools;
     private readonly string personaPath;
+    private readonly ApprovalService approvalService;
     private readonly ILogger<HeartbeatRunner> logger;
 
-    public HeartbeatRunner(LmStudioClient lmStudioClient, HeartbeatStore heartbeatStore, ConversationStore conversationStore, ConversationManager conversationManager, ChatLoop chatLoop, IEnumerable<ICoreTool> coreTools, string personaPath, bool allowWeb, ILogger<HeartbeatRunner> logger)
+    public HeartbeatRunner(LmStudioClient lmStudioClient, HeartbeatStore heartbeatStore, ConversationStore conversationStore, ConversationManager conversationManager, ChatLoop chatLoop, ApprovalService approvalService, IEnumerable<ICoreTool> coreTools, string personaPath, bool allowWeb, ILogger<HeartbeatRunner> logger)
     {
+        this.approvalService = approvalService;
         this.lmStudioClient = lmStudioClient;
         this.heartbeatStore = heartbeatStore;
         this.conversationStore = conversationStore;
@@ -60,7 +63,8 @@ public sealed class HeartbeatRunner
         var stopwatch = Stopwatch.StartNew();
         var tickId = heartbeatStore.StartTick(trigger, startedAt);
         var journalTool = new WriteJournalTool(heartbeatStore, tickId);
-        var tickTools = readOnlyTools.Append(journalTool).ToList();
+        var cardTool = new LeaveCardTool(heartbeatStore, tickId);
+        var tickTools = readOnlyTools.Append(journalTool).Append(cardTool).ToList();
         var toolDefinitions = BuildToolDefinitions(tickTools);
         var steps = new List<ToolStep>();
         int? promptTokens = null;
@@ -124,8 +128,8 @@ public sealed class HeartbeatRunner
                 break;
             }
 
-            var usedTool = steps.Any(step => step.ToolName != journalTool.Name);
-            var outcome = journalTool.EntryWritten ? HeartbeatOutcomes.Journal : usedTool ? HeartbeatOutcomes.Looked : HeartbeatOutcomes.Nothing;
+            var usedTool = steps.Any(step => step.ToolName != journalTool.Name && step.ToolName != cardTool.Name);
+            var outcome = cardTool.CardLeft ? HeartbeatOutcomes.Card : journalTool.EntryWritten ? HeartbeatOutcomes.Journal : usedTool ? HeartbeatOutcomes.Looked : HeartbeatOutcomes.Nothing;
             var shownNote = ShortenNote(note, outcome);
             heartbeatStore.FinishTick(tickId, stopwatch.Elapsed.TotalSeconds, outcome, shownNote, steps, promptTokens);
             logger.LogInformation("Heartbeat tick {TickId} ({Trigger}): {Outcome} in {Seconds:0.0} s · {Note}", tickId, trigger, outcome, stopwatch.Elapsed.TotalSeconds, shownNote);
@@ -213,15 +217,45 @@ public sealed class HeartbeatRunner
             }
         }
 
+        AppendBrief(builder);
+
         var lookupTools = string.Join(", ", readOnlyTools.Select(readOnlyTool => readOnlyTool.Name));
         builder.AppendLine();
         builder.AppendLine("What you can do now:");
         builder.AppendLine("- Nothing. Most of the time that's the right answer.");
         builder.AppendLine($"- Look something up ({lookupTools}) if a chat left a question open that you could answer better next time.");
         builder.AppendLine("- Write one journal entry with write_journal: something you noticed or thought about, as a note to yourself. Not a to-do list or questions for Shapto. Only if it's worth reading.");
+        builder.AppendLine("- Leave one card in the morning brief with leave_card, only if Shapto would be glad to find it when they're back.");
         builder.AppendLine("You can't message Shapto, save memories or change anything from here, so don't claim you did. Don't invent events.");
         builder.AppendLine("End with one short line saying what you did, like \"Nothing to do.\" or \"Wrote about the workbench idea.\"");
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// The brief as it stands, plus what Shapto thought of earlier cards, so she leaves more of what helps and less of what doesn't.
+    /// </summary>
+    private void AppendBrief(StringBuilder builder)
+    {
+        var activeCards = heartbeatStore.ListActiveBriefCards();
+        builder.AppendLine();
+        builder.AppendLine(activeCards.Count == 0 ? "The morning brief is empty." : $"The morning brief has {activeCards.Count} of {LeaveCardTool.MaximumActiveCards} cards:");
+        foreach (var activeCard in activeCards)
+        {
+            builder.Append("- \"").Append(activeCard.Title).AppendLine("\"");
+        }
+
+        var ratedCards = heartbeatStore.ListRatedBriefCards(6);
+        var usefulTitles = ratedCards.Where(card => card.Status != BriefCardStatuses.NotUseful).Select(card => "\"" + card.Title + "\"").ToList();
+        var notUsefulTitles = ratedCards.Where(card => card.Status == BriefCardStatuses.NotUseful).Select(card => "\"" + card.Title + "\"").ToList();
+        if (usefulTitles.Count > 0)
+        {
+            builder.Append("Shapto found these useful: ").AppendLine(string.Join(", ", usefulTitles));
+        }
+
+        if (notUsefulTitles.Count > 0)
+        {
+            builder.Append("Shapto didn't find these useful: ").AppendLine(string.Join(", ", notUsefulTitles));
+        }
     }
 
     private void AppendChat(StringBuilder builder, DateTimeOffset now, ConversationSummary chatSummary)
@@ -262,7 +296,9 @@ public sealed class HeartbeatRunner
         try
         {
             using var argumentsDocument = JsonDocument.Parse(string.IsNullOrWhiteSpace(argumentsText) ? "{}" : argumentsText);
-            return await tool.ExecuteAsync(argumentsDocument.RootElement, cancellationToken);
+            // Nobody can be asked during a tick, so anything that needs approval only runs if Shapto has "always allowed" it.
+            var refusal = await approvalService.CheckToolAsync(tool, argumentsDocument.RootElement, null, cancellationToken);
+            return refusal ?? await tool.ExecuteAsync(argumentsDocument.RootElement, cancellationToken);
         }
         catch (JsonException)
         {
@@ -288,7 +324,7 @@ public sealed class HeartbeatRunner
         var closingLine = note.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault() ?? "";
         if (closingLine.Length == 0)
         {
-            return outcome == HeartbeatOutcomes.Journal ? "Wrote in her journal." : outcome == HeartbeatOutcomes.Looked ? "Looked a few things up." : "Nothing to do.";
+            return outcome == HeartbeatOutcomes.Card ? "Left a card in the brief." : outcome == HeartbeatOutcomes.Journal ? "Wrote in her journal." : outcome == HeartbeatOutcomes.Looked ? "Looked a few things up." : "Nothing to do.";
         }
 
         return Shorten(closingLine, 200);

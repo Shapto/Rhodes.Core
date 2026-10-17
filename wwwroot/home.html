@@ -38,6 +38,14 @@
                     </div>
                 </form>
 
+                <section class="panel accent cut brief-panel" id="briefPanel" aria-labelledby="briefHeading" hidden>
+                    <div class="panel-heading label">
+                        <span id="briefHeading">MORNING BRIEF</span>
+                        <span class="panel-heading-note mono" id="briefNote"></span>
+                    </div>
+                    <div class="brief-cards" id="briefCards"></div>
+                </section>
+
                 <section class="panel accent cut" id="resumePanel" aria-labelledby="resumeHeading" hidden>
                     <div class="panel-heading label" id="resumeHeading">PICK UP WHERE YOU LEFT OFF</div>
                     <div class="resume-card">
@@ -81,6 +89,7 @@
                         <button type="button" class="type-tab" role="tab" data-view="documents" aria-selected="false">DOCUMENTS</button>
                         <button type="button" class="type-tab" role="tab" data-view="chats" aria-selected="false">CHAT INTERNALS</button>
                         <button type="button" class="type-tab" role="tab" data-view="legacy" aria-selected="false">OLD CATEGORIES</button>
+                        <button type="button" class="type-tab" role="tab" data-view="permissions" aria-selected="false">PERMISSIONS</button>
                     </div>
 
                     <div class="bench-view" data-view="probe">
@@ -133,6 +142,16 @@
                         <pre class="bench-output" id="internalsSummary">—</pre>
                     </div>
 
+                    <div class="bench-view" data-view="permissions" hidden>
+                        <p class="bench-note mono">What you chose "always allow" for on her approval cards. Remove one and she asks again next time.</p>
+                        <div class="bench-table-wrap">
+                            <table class="bench-table">
+                                <thead><tr><th>kind</th><th>always allowed</th><th>since</th><th></th></tr></thead>
+                                <tbody id="permissionRows"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <div class="bench-view" data-view="legacy" hidden>
                         <p class="bench-note mono">Categories from the old memory plugin, kept on every imported memory. Click a row to see its memories.</p>
                         <div class="bench-table-wrap">
@@ -182,7 +201,6 @@
                 <section class="panel cut later" aria-labelledby="laterHeading">
                     <div class="panel-heading label" id="laterHeading">LATER</div>
                     <ul class="later-list mono">
-                        <li><span>morning brief</span><span>next round</span></li>
                         <li><span>project board</span><span>not designed yet</span></li>
                     </ul>
                 </section>

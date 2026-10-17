@@ -12,12 +12,31 @@ public sealed record HeartbeatTick(long Id, DateTimeOffset StartedAt, double Sec
 
 public sealed record JournalEntry(long Id, long? TickId, DateTimeOffset WrittenAt, string Text);
 
+/// <summary>
+/// A morning brief card she left during a tick. Status is one of BriefCardStatuses.
+/// </summary>
+public sealed record BriefCard(long Id, long? TickId, DateTimeOffset CreatedAt, string Title, string Body, string Status);
+
+public sealed record BriefCardUpdate(string Status);
+
+public static class BriefCardStatuses
+{
+    public const string New = "new";
+    public const string Useful = "useful";
+    public const string NotUseful = "not_useful";
+    public const string Saved = "saved";
+    public const string Dismissed = "dismissed";
+
+    public static readonly HashSet<string> SetByShapto = [Useful, NotUseful, Saved, Dismissed];
+}
+
 public static class HeartbeatOutcomes
 {
     public const string Running = "running";
     public const string Nothing = "nothing";
     public const string Looked = "looked";
     public const string Journal = "journal";
+    public const string Card = "card";
     public const string Interrupted = "interrupted";
     public const string Failed = "failed";
 }
@@ -28,6 +47,11 @@ public static class HeartbeatOutcomes
 public sealed class HeartbeatStore : IDisposable
 {
     private const int MaximumStoredResultCharacters = 2000;
+
+    /// <summary>
+    /// Cards Shapto doesn't save are gone from the brief after this long.
+    /// </summary>
+    public static readonly TimeSpan BriefCardLifetime = TimeSpan.FromDays(3);
 
     private readonly SqliteConnection connection;
     private readonly object databaseLock = new();
@@ -53,6 +77,15 @@ public sealed class HeartbeatStore : IDisposable
             note           TEXT NOT NULL DEFAULT '',
             steps          TEXT NOT NULL DEFAULT '[]',
             prompt_tokens  INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS brief_cards (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tick_id     INTEGER,
+            created_at  INTEGER NOT NULL,
+            title       TEXT NOT NULL,
+            body        TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'new',
+            status_at   INTEGER
         );
         CREATE TABLE IF NOT EXISTS journal_entries (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -225,6 +258,83 @@ public sealed class HeartbeatStore : IDisposable
                 ("$now", DateTimeOffset.Now.ToUnixTimeMilliseconds()),
                 ("$newestShownId", newestShownId));
         }
+    }
+
+    public long AddBriefCard(long? tickId, string title, string body)
+    {
+        lock (databaseLock)
+        {
+            using var command = CreateCommand("INSERT INTO brief_cards (tick_id, created_at, title, body) VALUES ($tickId, $now, $title, $body); SELECT last_insert_rowid();",
+                ("$tickId", tickId),
+                ("$now", DateTimeOffset.Now.ToUnixTimeMilliseconds()),
+                ("$title", title),
+                ("$body", body));
+            return (long)command.ExecuteScalar()!;
+        }
+    }
+
+    /// <summary>
+    /// The cards on the dashboard now: saved ones always, the rest until they're dismissed or 3 days old. Newest first.
+    /// </summary>
+    public IReadOnlyList<BriefCard> ListActiveBriefCards()
+    {
+        lock (databaseLock)
+        {
+            using var command = CreateCommand("""
+                SELECT id, tick_id, created_at, title, body, status FROM brief_cards
+                WHERE status = $saved OR (status <> $dismissed AND created_at >= $oldest)
+                ORDER BY created_at DESC;
+                """,
+                ("$saved", BriefCardStatuses.Saved),
+                ("$dismissed", BriefCardStatuses.Dismissed),
+                ("$oldest", DateTimeOffset.Now.Subtract(BriefCardLifetime).ToUnixTimeMilliseconds()));
+            return ReadBriefCards(command);
+        }
+    }
+
+    /// <summary>
+    /// Cards Shapto rated, newest first, so the next ticks learn what's worth leaving.
+    /// </summary>
+    public IReadOnlyList<BriefCard> ListRatedBriefCards(int limit)
+    {
+        lock (databaseLock)
+        {
+            using var command = CreateCommand("SELECT id, tick_id, created_at, title, body, status FROM brief_cards WHERE status IN ($useful, $notUseful, $saved) ORDER BY status_at DESC LIMIT $limit;",
+                ("$useful", BriefCardStatuses.Useful),
+                ("$notUseful", BriefCardStatuses.NotUseful),
+                ("$saved", BriefCardStatuses.Saved),
+                ("$limit", limit));
+            return ReadBriefCards(command);
+        }
+    }
+
+    public bool SetBriefCardStatus(long cardId, string status)
+    {
+        lock (databaseLock)
+        {
+            return Execute("UPDATE brief_cards SET status = $status, status_at = $now WHERE id = $id;",
+                ("$status", status),
+                ("$now", DateTimeOffset.Now.ToUnixTimeMilliseconds()),
+                ("$id", cardId)) > 0;
+        }
+    }
+
+    private static List<BriefCard> ReadBriefCards(SqliteCommand command)
+    {
+        using var reader = command.ExecuteReader();
+        var cards = new List<BriefCard>();
+        while (reader.Read())
+        {
+            cards.Add(new BriefCard(
+                reader.GetInt64(0),
+                reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)).ToLocalTime(),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5)));
+        }
+
+        return cards;
     }
 
     public int CountJournal()

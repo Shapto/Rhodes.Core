@@ -1,4 +1,5 @@
-﻿using Rhodes.Core.Documents;
+﻿using Rhodes.Core.Approvals;
+using Rhodes.Core.Documents;
 using Rhodes.Core.Web;
 using System.Net;
 using System.Net.Sockets;
@@ -12,7 +13,7 @@ namespace Rhodes.Core.Tools
     /// Reads a web page or GitHub link. Short pages come back whole. Long ones are saved as a document, so she gets the start
     /// (or excerpts around find_in_page words) and can search or read on with search_document and read_document.
     /// </summary>
-    public sealed class WebFetchTool : ICoreTool
+    public sealed class WebFetchTool : ICoreTool, IApprovalRequired
     {
         private const int DirectCharacters = 6000;
         private const int FirstPartCharacters = 4000;
@@ -54,6 +55,21 @@ namespace Rhodes.Core.Tools
             },
             ["required"] = new JsonArray("url"),
         };
+
+        /// <summary>
+        /// "Always allow" remembers the site (without www.), so allowing github.com once covers every page on it.
+        /// </summary>
+        public ApprovalRequest? DescribeApproval(JsonElement arguments)
+        {
+            var url = ToolArguments.GetOptionalString(arguments, "url")?.Trim();
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+            {
+                return null;
+            }
+
+            var host = uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host;
+            return new ApprovalRequest(ApprovalCategories.Web, "Read a web page", uri.ToString(), host, host);
+        }
 
         public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken)
         {
