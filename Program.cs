@@ -43,6 +43,13 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     builder.Configuration.GetValue("Chat:MaximumThinkingCharacters", 24000),
     serviceProvider.GetRequiredService<ILogger<ChatLoop>>()));
 
+builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
+    serviceProvider.GetRequiredService<LmStudioClient>(),
+    conversationStore,
+    personaPath,
+    builder.Configuration.GetValue("Chat:ContextTokens", 64000),
+    serviceProvider.GetRequiredService<ILogger<ConversationCompactor>>()));
+
 var app = builder.Build();
 
 app.UseStaticFiles();
@@ -54,7 +61,8 @@ app.MapGet("/memory/find", (string text, MemoryStore store) => store.FindContain
 
 var webJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 app.MapPost("/memory/{memoryId}/delete", (string memoryId, MemoryStore store) => store.Delete(memoryId) ? Results.Ok() : Results.NotFound());
-app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, CancellationToken cancellationToken) =>
+
+app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, ConversationCompactor conversationCompactor, CancellationToken cancellationToken) =>
 {
     var conversation = string.IsNullOrEmpty(chatRequest.ConversationId) ? conversationManager.Create() : conversationManager.Get(chatRequest.ConversationId);
     if (conversation is null)
@@ -63,10 +71,11 @@ app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, Conversa
     }
 
     var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.Client ?? "test console", chatRequest.Thinking ?? "auto", null, cancellationToken);
+    _ = Task.Run(() => conversationCompactor.CompactIfNeededAsync(conversation, null, CancellationToken.None));
     return Results.Ok(new { conversationId = conversation.Id, turnResult });
 });
 
-app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, HttpContext httpContext, CancellationToken cancellationToken) =>
+app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, ConversationCompactor conversationCompactor, HttpContext httpContext, CancellationToken cancellationToken) =>
 {
     httpContext.Response.ContentType = "text/event-stream";
     httpContext.Response.Headers.CacheControl = "no-cache";
@@ -89,17 +98,40 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
     {
         var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
         await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s" });
+
+        var compacted = await conversationCompactor.CompactIfNeededAsync(conversation, statusText => TrySendAsync(new { type = "status", text = statusText }), CancellationToken.None);
+        if (compacted)
+        {
+            await TrySendAsync(new { type = "compacted" });
+        }
     }
     catch (Exception exception) when (exception is not OperationCanceledException)
     {
         await SendAsync(new { type = "error", text = exception.Message });
     }
+
+    async Task TrySendAsync(object payload)
+    {
+        try
+        {
+            await SendAsync(payload);
+        }
+        catch (Exception)
+        {
+            // The page is gone; compaction carries on regardless.
+        }
+    }
 });
 
 app.MapGet("/chats", (ConversationStore conversationStore) => conversationStore.List(50));
 
+app.MapGet("/chats/{conversationId}/compaction", (string conversationId, ConversationManager conversationManager) =>
+    conversationManager.Get(conversationId) is { } conversation
+        ? Results.Ok(new { conversation.Summary, conversation.SummaryCoversThrough, conversation.ToolResultsCollapsedBefore, conversation.LastContextTokens, MessageCount = conversation.Messages.Count })
+        : Results.NotFound());
+
 app.MapGet("/chats/{conversationId}", (string conversationId, ConversationManager conversationManager) =>
-    conversationManager.Get(conversationId) is { } conversation ? Results.Ok(ConversationManager.ToDisplayMessages(conversation)) : Results.NotFound());
+    conversationManager.Get(conversationId) is { } conversation ? Results.Ok(ConversationManager.ToView(conversation)) : Results.NotFound());
 
 app.MapGet("/memory/search", (string query, MemoryStore store) => store.Search(query, limit: 5, includeArchive: false));
 app.MapGet("/memory/recent", (MemoryStore store) => store.GetRecent(10));

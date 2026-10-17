@@ -21,6 +21,16 @@ public sealed class Conversation
     public DateTimeOffset? LastUserMessageAt { get; set; }
 
     public SemaphoreSlim TurnLock { get; } = new(1, 1);
+
+    public string Summary { get; set; } = "";
+
+    public int SummaryCoversThrough { get; set; }
+
+    public int ToolResultsCollapsedBefore { get; set; }
+
+    public int? LastContextTokens { get; set; }
+
+    public int LastRequestCharacters { get; set; }
 }
 
 public sealed record ChatRequest(string Message, string? Client, string? Thinking, string? ConversationId);

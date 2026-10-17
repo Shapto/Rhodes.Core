@@ -177,7 +177,10 @@ public sealed class LmStudioClient
             usage?["completion_tokens"],
             keepReading ? "" : ", stopped early");
 
-        return BuildMessage(contentBuilder, reasoningBuilder, toolCallParts);
+        var message = BuildMessage(contentBuilder, reasoningBuilder, toolCallParts);
+        message["rhodes_prompt_tokens"] = usage?["prompt_tokens"]?.DeepClone();
+        message["rhodes_completion_tokens"] = usage?["completion_tokens"]?.DeepClone();
+        return message;
     }
 
     /// <summary>

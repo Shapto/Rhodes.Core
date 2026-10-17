@@ -2,7 +2,8 @@
 
 namespace Rhodes.Core.Chat;
 
-public sealed record DisplayMessage(string Role, string Text, string? Reasoning, string? ToolName);
+public sealed record DisplayMessage(int Index, string Role, string Text, string? Reasoning, string? ToolName);
+public sealed record ConversationView(string Id, string Title, string Summary, int SummaryCoversThrough, IReadOnlyList<DisplayMessage> Messages);
 
 /// <summary>
 /// Hands out one shared Conversation object per chat id, loading it from rhodes.db the first time.
@@ -49,18 +50,20 @@ public sealed class ConversationManager
     }
 
     /// <summary>
-    /// What a page shows: what Shapto typed (not the header or injected memories), her answers with their thinking, tool results.
+    /// What a page shows: the messages with their positions, plus where the summary begins, so the page can draw the marker.
     /// </summary>
-    public static IReadOnlyList<DisplayMessage> ToDisplayMessages(Conversation conversation)
+    public static ConversationView ToView(Conversation conversation)
     {
-        return conversation.Messages
-            .Select(message => new DisplayMessage(
+        var displayMessages = conversation.Messages
+            .Select((message, index) => new DisplayMessage(
+                index,
                 GetString(message["role"]) ?? "",
                 GetString(message["rhodes_display_text"]) ?? GetString(message["content"]) ?? "",
                 GetString(message["rhodes_reasoning"]),
                 GetString(message["rhodes_tool_name"])))
             .Where(displayMessage => displayMessage.Text.Length > 0 || displayMessage.Reasoning is not null)
             .ToList();
+        return new ConversationView(conversation.Id, conversation.Title, conversation.Summary, conversation.SummaryCoversThrough, displayMessages);
     }
 
     private static string? GetString(JsonNode? node)

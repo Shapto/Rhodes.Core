@@ -3,7 +3,7 @@ using Microsoft.Data.Sqlite;
 
 namespace Rhodes.Core.Chat;
 
-public sealed record ConversationSummary(string Id, string Title, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, int MessageCount);
+public sealed record ConversationSummary(string Id, string Title, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, int MessageCount, bool Compacted);
 
 /// <summary>
 /// Saves conversations in rhodes.db, separate from memory.db: chat history is Rhodes' own data, memories are hers.
@@ -26,20 +26,32 @@ public sealed class ConversationStore : IDisposable
         connection.Open();
         Execute(null, "PRAGMA journal_mode = WAL;");
         Execute(null, """
-            CREATE TABLE IF NOT EXISTS conversations (
-                id                    TEXT PRIMARY KEY,
-                title                 TEXT NOT NULL DEFAULT '',
-                created_at            INTEGER NOT NULL,
-                updated_at            INTEGER NOT NULL,
-                last_user_message_at  INTEGER
-            );
-            CREATE TABLE IF NOT EXISTS conversation_messages (
-                conversation_id  TEXT NOT NULL,
-                position         INTEGER NOT NULL,
-                message_json     TEXT NOT NULL,
-                PRIMARY KEY (conversation_id, position)
-            );
-            """);
+        CREATE TABLE IF NOT EXISTS conversations (
+            id                    TEXT PRIMARY KEY,
+            title                 TEXT NOT NULL DEFAULT '',
+            created_at            INTEGER NOT NULL,
+            updated_at            INTEGER NOT NULL,
+            last_user_message_at  INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+            conversation_id  TEXT NOT NULL,
+            position         INTEGER NOT NULL,
+            message_json     TEXT NOT NULL,
+            PRIMARY KEY (conversation_id, position)
+        );
+        """);
+        AddColumnIfMissing("summary", "TEXT NOT NULL DEFAULT ''");
+        AddColumnIfMissing("summary_covers_through", "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing("tool_results_collapsed_before", "INTEGER NOT NULL DEFAULT 0");
+    }
+
+    private void AddColumnIfMissing(string columnName, string columnDefinition)
+    {
+        using var command = CreateCommand(null, "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = $name;", ("$name", columnName));
+        if (Convert.ToInt64(command.ExecuteScalar()) == 0)
+        {
+            Execute(null, $"ALTER TABLE conversations ADD COLUMN {columnName} {columnDefinition};");
+        }
     }
 
     public Conversation Create()
@@ -60,7 +72,7 @@ public sealed class ConversationStore : IDisposable
     {
         lock (databaseLock)
         {
-            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at FROM conversations WHERE id = $id;", ("$id", conversationId));
+            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at, summary, summary_covers_through, tool_results_collapsed_before FROM conversations WHERE id = $id;", ("$id", conversationId));
             using var conversationReader = conversationCommand.ExecuteReader();
             if (!conversationReader.Read())
             {
@@ -71,6 +83,9 @@ public sealed class ConversationStore : IDisposable
             {
                 Title = conversationReader.GetString(0),
                 LastUserMessageAt = conversationReader.IsDBNull(1) ? null : DateTimeOffset.FromUnixTimeMilliseconds(conversationReader.GetInt64(1)),
+                Summary = conversationReader.GetString(2),
+                SummaryCoversThrough = conversationReader.GetInt32(3),
+                ToolResultsCollapsedBefore = conversationReader.GetInt32(4),
             };
 
             using var messagesCommand = CreateCommand(null, "SELECT message_json FROM conversation_messages WHERE conversation_id = $id ORDER BY position;", ("$id", conversationId));
@@ -81,6 +96,18 @@ public sealed class ConversationStore : IDisposable
             }
 
             return conversation;
+        }
+    }
+
+    public void SaveCompaction(Conversation conversation)
+    {
+        lock (databaseLock)
+        {
+            Execute(null, "UPDATE conversations SET summary = $summary, summary_covers_through = $summaryCoversThrough, tool_results_collapsed_before = $toolResultsCollapsedBefore WHERE id = $id;",
+                ("$summary", conversation.Summary),
+                ("$summaryCoversThrough", conversation.SummaryCoversThrough),
+                ("$toolResultsCollapsedBefore", conversation.ToolResultsCollapsedBefore),
+                ("$id", conversation.Id));
         }
     }
 
@@ -115,7 +142,7 @@ public sealed class ConversationStore : IDisposable
         lock (databaseLock)
         {
             using var command = CreateCommand(null, """
-                SELECT conversations.id, conversations.title, conversations.created_at, conversations.updated_at, COUNT(conversation_messages.position)
+                SELECT conversations.id, conversations.title, conversations.created_at, conversations.updated_at, COUNT(conversation_messages.position), conversations.summary_covers_through
                 FROM conversations
                 LEFT JOIN conversation_messages ON conversation_messages.conversation_id = conversations.id
                 GROUP BY conversations.id
@@ -133,7 +160,8 @@ public sealed class ConversationStore : IDisposable
                     reader.GetString(1),
                     DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(2)),
                     DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)),
-                    reader.GetInt32(4)));
+                    reader.GetInt32(4),
+                    reader.GetInt32(5) > 0));
             }
 
             return summaries;

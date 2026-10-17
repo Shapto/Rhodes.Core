@@ -80,7 +80,7 @@ public sealed class ChatLoop
             for (var stepNumber = 0; stepNumber <= MaximumToolSteps; stepNumber++)
             {
                 var offerTools = stepNumber < MaximumToolSteps;
-                var requestMessages = BuildRequestMessages(systemPrompt, conversation.Messages);
+                var requestMessages = BuildRequestMessages(systemPrompt, conversation);
                 var thinkingFilter = new StreamingThinkingFilter();
                 var thinkingCharacters = 0;
                 var separateReasoningSeen = false;
@@ -129,6 +129,12 @@ public sealed class ChatLoop
                 if (thinkingLimitHit)
                 {
                     throw new ThinkingLimitException($"Stopped: she was still thinking after about {thinkingCharacters / 4} tokens. Ask again, or more specifically.");
+                }
+
+                var promptTokens = GetInteger(responseMessage["rhodes_prompt_tokens"]);
+                if (promptTokens is not null)
+                {
+                    conversation.LastContextTokens = promptTokens + (GetInteger(responseMessage["rhodes_completion_tokens"]) ?? 0);
                 }
 
                 foreach (var chatEvent in thinkingFilter.Flush())
@@ -357,12 +363,20 @@ public sealed class ChatLoop
         return gap.TotalDays < 1 ? $"{(int)gap.TotalHours} h since last message" : $"{(int)gap.TotalDays} days since last message";
     }
 
-    private static JsonArray BuildRequestMessages(string systemPrompt, IEnumerable<JsonObject> conversationMessages)
+    /// <summary>
+    /// What the model sees: the system prompt (plus the running summary, if any), then the messages after the summary,
+    /// with old tool results collapsed and Rhodes-only fields removed. Records the size for compaction estimates.
+    /// </summary>
+    internal static JsonArray BuildRequestMessages(string systemPrompt, Conversation conversation)
     {
-        var requestMessages = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = systemPrompt } };
-        foreach (var message in conversationMessages)
+        var systemContent = conversation.Summary.Length == 0 ? systemPrompt : systemPrompt + "\n\n## Earlier in this conversation (summary)\n" + conversation.Summary;
+        var requestMessages = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = systemContent } };
+        var totalCharacters = systemContent.Length;
+
+        for (var index = conversation.SummaryCoversThrough; index < conversation.Messages.Count; index++)
         {
-            var requestMessage = message.DeepClone().AsObject();
+            var requestMessage = conversation.Messages[index].DeepClone().AsObject();
+            var toolName = GetString(requestMessage["rhodes_tool_name"]);
             var privateKeys = requestMessage
                 .Select(property => property.Key)
                 .Where(key => key.StartsWith("rhodes_", StringComparison.Ordinal))
@@ -372,9 +386,16 @@ public sealed class ChatLoop
                 requestMessage.Remove(privateKey);
             }
 
+            if (index < conversation.ToolResultsCollapsedBefore && GetString(requestMessage["role"]) == "tool")
+            {
+                requestMessage["content"] = $"[Earlier {toolName ?? "tool"} result, collapsed to save space. Call the tool again if you need it.]";
+            }
+
+            totalCharacters += requestMessage.ToJsonString().Length;
             requestMessages.Add(requestMessage);
         }
 
+        conversation.LastRequestCharacters = totalCharacters;
         return requestMessages;
     }
 
@@ -401,5 +422,10 @@ public sealed class ChatLoop
     private static string? GetString(JsonNode? node)
     {
         return node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+    }
+
+    private static int? GetInteger(JsonNode? node)
+    {
+        return node is JsonValue value && value.TryGetValue<int>(out var number) ? number : null;
     }
 }
