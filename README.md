@@ -6,7 +6,7 @@ Rhodes.Core is a .NET 9 ASP.NET Core application that powers a local AI assistan
 
 The project is built around a conversational agent that can:
 
-- chat with a local model through LM Studio
+- chat with a local model through an OpenAI-compatible endpoint (llama-server)
 - keep multi-turn conversations and a title system
 - persist memory and documents in SQLite-backed stores
 - read and summarize web pages and GitHub repositories/files
@@ -17,7 +17,7 @@ The project is built around a conversational agent that can:
 ## Project structure
 
 - `Approvals/` - approval requests, decision flow, and database-backed allow rules
-- `Chat/` - conversation lifecycle, chat loop, LM Studio client, status monitoring, title generation, and streaming filters
+- `Chat/` - conversation lifecycle, chat loop, OpenAI-compatible client, status monitoring, title generation, and streaming filters
 - `Memory/` - memory store and retrieval logic
 - `Documents/` - document storage and retrieval
 - `Heartbeat/` - background heartbeat and scheduler services
@@ -33,14 +33,14 @@ The project is built around a conversational agent that can:
 - ASP.NET Core Minimal APIs
 - SQLite via `Microsoft.Data.Sqlite`
 - JSON-driven tool and event models
-- Local model support through LM Studio
+- OpenAI-compatible local model endpoint (llama-server)
 
 ## Getting started
 
 Requirements:
 
 - .NET 9 SDK
-- A running local model endpoint compatible with LM Studio
+- A running local model endpoint compatible with the OpenAI chat completions API (llama-server)
 - Optional GitHub token for higher API rate limits when reading GitHub repos/files
 
 Install and run:
