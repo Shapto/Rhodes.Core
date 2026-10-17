@@ -1,0 +1,271 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Rhodes test</title>
+    <style>
+        body {
+            background: #0f1216;
+            color: #d8dee6;
+            font: 15px/1.5 system-ui, sans-serif;
+            margin: 0 auto;
+            max-width: 860px;
+            padding: 16px;
+        }
+
+        .turn {
+            border-left: 2px solid #2bd4e8;
+            margin: 16px 0;
+            padding-left: 12px;
+        }
+
+        .you {
+            color: #8fa1b3;
+            white-space: pre-wrap;
+        }
+
+        details {
+            color: #6f7f8f;
+            font-size: 13px;
+            white-space: pre-wrap;
+        }
+
+        .memories, .tool, .status, .level {
+            color: #6f7f8f;
+            font-size: 13px;
+            white-space: pre-wrap;
+        }
+
+        .tool {
+            color: #2bd4e8;
+        }
+
+        .answer {
+            white-space: pre-wrap;
+            margin-top: 6px;
+        }
+
+        .error {
+            color: #ff6b6b;
+        }
+
+        form {
+            display: flex;
+            gap: 8px;
+            position: sticky;
+            bottom: 0;
+            background: #0f1216;
+            padding: 8px 0;
+        }
+
+        textarea {
+            flex: 1;
+            background: #171c22;
+            color: inherit;
+            border: 1px solid #2a323c;
+            padding: 8px;
+            font: inherit;
+            resize: vertical;
+        }
+
+        button, select {
+            background: #171c22;
+            color: #2bd4e8;
+            border: 1px solid #2bd4e8;
+            padding: 0 12px;
+            cursor: pointer;
+            font: inherit;
+        }
+    </style>
+</head>
+<body>
+    <div id="turns"></div>
+    <form id="messageForm">
+        <textarea id="messageInput" rows="2" placeholder="Message Closure (Enter sends, Shift+Enter for a new line, /quick or /think to override)"></textarea>
+        <select id="thinkingSelect" title="Thinking">
+            <option value="auto">Auto</option>
+            <option value="on">Think</option>
+            <option value="off">Quick</option>
+        </select>
+        <button type="submit">Send</button>
+        <button type="button" id="stopButton">Stop</button>
+        <button type="button" id="newChatButton">New chat</button>
+    </form>
+    <script>
+        const turnsElement = document.getElementById('turns');
+        const messageInput = document.getElementById('messageInput');
+        const thinkingSelect = document.getElementById('thinkingSelect');
+        const conversationStorageKey = 'rhodesConversationId';
+        let currentAbortController = null;
+        let currentConversationId = readStoredConversationId();
+
+        function readStoredConversationId() {
+            try { return localStorage.getItem(conversationStorageKey); } catch { return null; }
+        }
+
+        function storeConversationId(conversationId) {
+            currentConversationId = conversationId;
+            try {
+                if (conversationId) localStorage.setItem(conversationStorageKey, conversationId);
+                else localStorage.removeItem(conversationStorageKey);
+            } catch { }
+        }
+
+        function addElement(parentElement, tagName, className, text) {
+            const newElement = document.createElement(tagName);
+            if (className) newElement.className = className;
+            if (text) newElement.textContent = text;
+            parentElement.appendChild(newElement);
+            return newElement;
+        }
+
+        function insertLine(turnElement, className, text, beforeElement) {
+            const lineElement = document.createElement('div');
+            lineElement.className = className;
+            lineElement.textContent = text;
+            turnElement.insertBefore(lineElement, beforeElement);
+        }
+
+        function addThinkingBox(turnElement, reasoningText) {
+            const thinkingDetails = addElement(turnElement, 'details');
+            addElement(thinkingDetails, 'summary', null, 'thinking (' + reasoningText.length + ' characters)');
+            addElement(thinkingDetails, 'div', null, reasoningText);
+        }
+
+        async function loadConversation(conversationId) {
+            const response = await fetch('/chats/' + conversationId);
+            if (!response.ok) {
+                storeConversationId(null);
+                return;
+            }
+            const displayMessages = await response.json();
+            let turnElement = null;
+            for (const displayMessage of displayMessages) {
+                if (displayMessage.role === 'user') {
+                    turnElement = addElement(turnsElement, 'div', 'turn');
+                    addElement(turnElement, 'div', 'you', 'You: ' + displayMessage.text);
+                } else if (turnElement && displayMessage.role === 'tool') {
+                    addElement(turnElement, 'div', 'tool', '→ ' + (displayMessage.toolName || 'tool') + '\n' + displayMessage.text);
+                } else if (turnElement && displayMessage.role === 'assistant') {
+                    if (displayMessage.reasoning) addThinkingBox(turnElement, displayMessage.reasoning);
+                    if (displayMessage.text) addElement(turnElement, 'div', 'answer', displayMessage.text);
+                }
+            }
+            window.scrollTo(0, document.body.scrollHeight);
+        }
+
+        async function sendMessage(messageText) {
+            const turnElement = addElement(turnsElement, 'div', 'turn');
+            addElement(turnElement, 'div', 'you', 'You: ' + messageText);
+            const levelLine = addElement(turnElement, 'div', 'level');
+            const thinkingDetails = addElement(turnElement, 'details');
+            const thinkingSummary = addElement(thinkingDetails, 'summary', null, 'thinking');
+            const thinkingText = addElement(thinkingDetails, 'div');
+            const statusLine = addElement(turnElement, 'div', 'status', 'waiting…');
+            let answerElement = addElement(turnElement, 'div', 'answer');
+
+            function handleEvent(chatEvent) {
+                const wasNearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
+                switch (chatEvent.type) {
+                    case 'conversation':
+                        storeConversationId(chatEvent.text);
+                        break;
+                    case 'thinkingLevel':
+                        levelLine.textContent = 'thinking: ' + chatEvent.text;
+                        if (chatEvent.text === 'off') thinkingDetails.style.display = 'none';
+                        break;
+                    case 'memories':
+                        insertLine(turnElement, 'memories', 'memories injected:\n' + chatEvent.text, thinkingDetails);
+                        break;
+                    case 'reasoning':
+                        thinkingDetails.style.display = '';
+                        thinkingText.textContent += chatEvent.text;
+                        statusLine.textContent = 'thinking… (' + thinkingText.textContent.length + ' characters)';
+                        break;
+                    case 'content':
+                        answerElement.textContent += chatEvent.text;
+                        statusLine.textContent = 'writing…';
+                        break;
+                    case 'moveToReasoning':
+                        thinkingText.textContent += answerElement.textContent;
+                        answerElement.textContent = '';
+                        break;
+                    case 'status':
+                        statusLine.textContent = chatEvent.text;
+                        break;
+                    case 'tool':
+                        insertLine(turnElement, 'tool', '→ ' + chatEvent.toolName + ' ' + chatEvent.text + '\n' + chatEvent.result, statusLine);
+                        answerElement = addElement(turnElement, 'div', 'answer');
+                        break;
+                    case 'done':
+                        statusLine.textContent = 'done in ' + chatEvent.text;
+                        thinkingSummary.textContent = 'thinking (' + thinkingText.textContent.length + ' characters)';
+                        break;
+                    case 'error':
+                        statusLine.className = 'status error';
+                        statusLine.textContent = 'error: ' + chatEvent.text;
+                        break;
+                }
+                if (wasNearBottom) window.scrollTo(0, document.body.scrollHeight);
+            }
+
+            currentAbortController = new AbortController();
+            try {
+                const response = await fetch('/chat/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: messageText, client: 'test page', thinking: thinkingSelect.value, conversationId: currentConversationId }),
+                    signal: currentAbortController.signal,
+                });
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let bufferedText = '';
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    bufferedText += decoder.decode(value, { stream: true });
+                    let separatorIndex;
+                    while ((separatorIndex = bufferedText.indexOf('\n\n')) >= 0) {
+                        const eventBlock = bufferedText.slice(0, separatorIndex);
+                        bufferedText = bufferedText.slice(separatorIndex + 2);
+                        if (eventBlock.startsWith('data: ')) handleEvent(JSON.parse(eventBlock.slice(6)));
+                    }
+                }
+            } catch (requestError) {
+                statusLine.className = requestError.name === 'AbortError' ? 'status' : 'status error';
+                statusLine.textContent = requestError.name === 'AbortError' ? 'stopped' : 'error: ' + requestError.message;
+            } finally {
+                currentAbortController = null;
+            }
+        }
+
+        document.getElementById('messageForm').addEventListener('submit', submitEvent => {
+            submitEvent.preventDefault();
+            const messageText = messageInput.value.trim();
+            if (!messageText) return;
+            messageInput.value = '';
+            sendMessage(messageText);
+        });
+
+        messageInput.addEventListener('keydown', keyEvent => {
+            if (keyEvent.key === 'Enter' && !keyEvent.shiftKey) {
+                keyEvent.preventDefault();
+                document.getElementById('messageForm').requestSubmit();
+            }
+        });
+
+        document.getElementById('stopButton').addEventListener('click', () => {
+            if (currentAbortController) currentAbortController.abort();
+        });
+
+        document.getElementById('newChatButton').addEventListener('click', () => {
+            storeConversationId(null);
+            turnsElement.textContent = '';
+            messageInput.focus();
+        });
+
+        if (currentConversationId) loadConversation(currentConversationId);
+    </script>
+</body>
+</html>

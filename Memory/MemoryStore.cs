@@ -90,9 +90,15 @@ namespace Rhodes.Core.Memory
 
         private static readonly HashSet<string> StopWords =
         [
-            "the", "and", "or", "for", "to", "of", "in", "on", "at", "is", "are", "was", "be", "it",
-        "this", "that", "with", "from", "what", "how", "why", "when", "do", "does", "did", "my", "your",
-    ];
+            "the", "and", "or", "for", "to", "of", "in", "on", "at", "is", "are", "was", "were", "be", "been", "it", "its",
+            "this", "that", "these", "those", "with", "from", "by", "as", "an", "if", "so", "but", "not", "no", "yes",
+            "what", "how", "why", "when", "where", "who", "which", "do", "does", "did", "done", "can", "could", "would", "should", "will",
+            "my", "your", "you", "me", "we", "us", "our", "they", "them", "their", "he", "she", "his", "her", "him", "im", "ive", "dont",
+            "hey", "hi", "hello", "ok", "okay", "yeah", "yep", "thanks", "thank", "please", "lol",
+            "first", "last", "new", "old", "ever", "never", "just", "really", "very", "much", "more", "most", "some", "any", "all",
+            "now", "today", "then", "again", "still", "also", "too", "here", "there", "about", "like", "thing", "things", "stuff",
+            "get", "got", "make", "made", "want", "need", "know", "think", "see", "look", "go", "going", "use", "using", "good", "bad",
+        ];
 
         private readonly SqliteConnection connection;
         private readonly object databaseLock = new();
@@ -364,6 +370,27 @@ namespace Rhodes.Core.Memory
             }
         }
 
+        /// <summary>
+        /// Every memory whose text contains the given words (case-insensitive), oldest first. For cleanup, not for her.
+        /// </summary>
+        public IReadOnlyList<MemoryRecord> FindContaining(string text, int limit)
+        {
+            lock (databaseLock)
+            {
+                using var command = CreateCommand(null,
+                    "SELECT " + MemoryColumns + " " + """
+            FROM memories
+            JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id
+            WHERE memories.content LIKE '%' || $text || '%'
+            ORDER BY memories.created_at
+            LIMIT $limit;
+            """,
+                    ("$text", text),
+                    ("$limit", limit));
+                return ReadAllMemories(command);
+            }
+        }
+
         private void EnsureSideTables()
         {
             Execute(null, """
@@ -386,17 +413,22 @@ namespace Rhodes.Core.Memory
         }
 
         /// <summary>
-        /// Turns free text into a safe FTS5 query: each word quoted (so no FTS syntax gets through),
-        /// prefix-matched (so "mod" finds "mods"), joined with OR.
+        /// The meaningful words in a text: lowercase, stop words removed, no duplicates.
         /// </summary>
-        private static string? BuildMatchExpression(string query)
+        public static IReadOnlyList<string> GetSearchWords(string text)
         {
-            var quotedWords = Regex.Matches(query.ToLowerInvariant(), @"[\p{L}\p{N}_]+")
-                .Select(word => $"\"{word}\"")
+            return Regex.Matches(text.ToLowerInvariant(), @"[\p{L}\p{N}_]+")
+                .Select(match => match.Value)
                 .Where(word => word.Length >= 2 && !StopWords.Contains(word))
                 .Distinct()
                 .Take(MaximumQueryWords)
-                .Select(word => $"\"{word}\"*")
+                .ToList();
+        }
+
+        private static string? BuildMatchExpression(string query)
+        {
+            var quotedWords = GetSearchWords(query)
+                .Select(word => $"\"{word}\"")
                 .ToList();
             return quotedWords.Count == 0 ? null : string.Join(" OR ", quotedWords);
         }

@@ -85,7 +85,7 @@ namespace Rhodes.Core.Tools
             builder.AppendLine($"Found {foundMemories.Count} memories for \"{query}\":");
             foreach (var memory in foundMemories)
             {
-                var shownContent = memory.Content.Length > MaximumContentCharacters ? memory.Content[..MaximumContentCharacters] + "…" : memory.Content;
+                var shownContent = (memory.Content.Length > MaximumContentCharacters ? memory.Content[..MaximumContentCharacters] + "…" : memory.Content).Replace("<think>", "[think tag]").Replace("</think>", "[think tag]");
                 builder.AppendLine($"- [{memory.Type}, saved {memory.CreatedAt:yyyy-MM-dd}, id {memory.Id}] {shownContent}");
             }
 

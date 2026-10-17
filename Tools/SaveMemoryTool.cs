@@ -72,6 +72,11 @@ namespace Rhodes.Core.Tools
                 throw new ToolArgumentException($"Type must be one of: {string.Join(", ", SavableTypes)}.");
             }
 
+            if (content.Contains("<think", StringComparison.OrdinalIgnoreCase) || content.Contains("think>", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ToolArgumentException("Don't save notes about your own reasoning format; Rhodes handles that.");
+            }
+
             if (content.Length < MinimumContentCharacters)
             {
                 throw new ToolArgumentException("Content is too short to be useful later. Write the fact as a full sentence.");
