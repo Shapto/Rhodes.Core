@@ -127,6 +127,96 @@ async function readErrorText(response) {
     }
 }
 
+// The core sends injected memories as a JSON array, because one memory can span several lines.
+function parseMemoryList(memoriesText) {
+    try {
+        const parsed = JSON.parse(memoriesText);
+        if (Array.isArray(parsed)) return parsed;
+    } catch { }
+    return memoriesText.split('\n');
+}
+
+// ---------- file viewer ----------
+
+const languageByExtension = {
+    cs: 'csharp', xml: 'xml', xaml: 'xml', csproj: 'xml', html: 'xml', json: 'json', ps1: 'powershell',
+    js: 'javascript', ts: 'typescript', py: 'python', cpp: 'cpp', h: 'cpp', c: 'c', yaml: 'yaml', yml: 'yaml',
+    ini: 'ini', cfg: 'ini', toml: 'ini', md: 'markdown', sql: 'sql', sh: 'bash', css: 'css',
+};
+const maximumHighlightedCharacters = 200000;
+let fileViewer = null;
+
+function closeFileViewer() {
+    if (!fileViewer) return false;
+    fileViewer.remove();
+    fileViewer = null;
+    return true;
+}
+
+async function openFileViewer(uploadId, fileName, estimatedTokens) {
+    closeFileViewer();
+    const viewerBackdrop = addElement(document.body, 'div', 'file-viewer-backdrop');
+    fileViewer = viewerBackdrop;
+    const viewerPanel = addElement(viewerBackdrop, 'div', 'file-viewer cut');
+    viewerPanel.setAttribute('role', 'dialog');
+    viewerPanel.setAttribute('aria-label', fileName);
+    const viewerHeader = addElement(viewerPanel, 'div', 'file-viewer-header');
+    addElement(viewerHeader, 'span', 'file-viewer-name mono', fileName);
+    addElement(viewerHeader, 'span', 'file-viewer-size mono', estimatedTokens ? formatTokens(estimatedTokens) + ' TOK' : '');
+    const copyButton = addElement(viewerHeader, 'button', 'turn-action', 'COPY');
+    copyButton.type = 'button';
+    const closeButton = addElement(viewerHeader, 'button', 'file-viewer-close', '×');
+    closeButton.type = 'button';
+    closeButton.setAttribute('aria-label', 'Close');
+    const viewerBody = addElement(viewerPanel, 'pre', 'file-viewer-body');
+    const viewerCode = addElement(viewerBody, 'code', null, 'loading…');
+
+    viewerBackdrop.addEventListener('click', clickEvent => {
+        if (clickEvent.target === viewerBackdrop) closeFileViewer();
+    });
+    closeButton.addEventListener('click', closeFileViewer);
+
+    let fileText = '';
+    try {
+        const response = await fetch('/uploads/' + encodeURIComponent(uploadId));
+        fileText = response.ok ? await response.text() : '';
+        if (fileViewer !== viewerBackdrop) return;
+        if (!response.ok) {
+            viewerCode.textContent = "This file isn't stored on the core anymore.";
+            return;
+        }
+    } catch (fetchError) {
+        if (fileViewer === viewerBackdrop) viewerCode.textContent = "Couldn't load the file: " + fetchError.message;
+        return;
+    }
+
+    const extension = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+    const language = languageByExtension[extension];
+    if (highlightingAvailable && language && hljs.getLanguage(language) && fileText.length <= maximumHighlightedCharacters) {
+        viewerCode.innerHTML = hljs.highlight(fileText, { language }).value;
+    } else {
+        viewerCode.textContent = fileText;
+    }
+    copyButton.addEventListener('click', async () => {
+        await copyText(fileText);
+        copyButton.textContent = 'COPIED';
+        setTimeout(() => { copyButton.textContent = 'COPY'; }, 1200);
+    });
+}
+
+// The file name in a chip opens the file, when the core has it stored (it has an id).
+function addFileName(chipElement, attachment) {
+    if (!attachment.id) return addElement(chipElement, 'span', 'file-name', attachment.fileName);
+    const fileButton = addElement(chipElement, 'button', 'file-name file-open', attachment.fileName);
+    fileButton.type = 'button';
+    fileButton.title = 'Open ' + attachment.fileName;
+    fileButton.addEventListener('click', clickEvent => {
+        clickEvent.stopPropagation();
+        openFileViewer(attachment.id, attachment.fileName, attachment.estimatedTokens);
+    });
+    return fileButton;
+}
+
 // ---------- markdown, code blocks, highlighting ----------
 
 function copyText(textToCopy) {
@@ -191,7 +281,7 @@ function addAttachmentChips(parentElement, attachments) {
     for (const attachment of attachments) {
         const tooBig = attachment.inline === false;
         const chipElement = addElement(attachmentRow, 'span', 'attachment-chip static' + (tooBig ? ' too-big' : ''));
-        addElement(chipElement, 'span', 'file-name', attachment.fileName);
+        addFileName(chipElement, attachment);
         const sizeText = attachment.estimatedTokens !== undefined ? formatTokens(attachment.estimatedTokens) + ' TOK' : '';
         addElement(chipElement, 'span', 'file-size', tooBig ? sizeText + ' · TOO BIG TO READ YET' : sizeText);
     }
@@ -715,7 +805,7 @@ function renderPendingAttachments() {
     const chipsFragment = document.createDocumentFragment();
     for (const attachment of pendingAttachments) {
         const chipElement = addElement(chipsFragment, 'span', 'attachment-chip ' + attachment.status);
-        addElement(chipElement, 'span', 'file-name', attachment.fileName);
+        addFileName(chipElement, attachment);
         const sizeTexts = { uploading: 'UPLOADING…', ready: formatTokens(attachment.estimatedTokens || 0) + ' TOK', error: attachment.errorText };
         addElement(chipElement, 'span', 'file-size', sizeTexts[attachment.status]);
         const removeButton = addElement(chipElement, 'button', 'chip-remove', '×');
@@ -825,7 +915,7 @@ async function sendMessage(messageText, attachmentsToSend, options) {
                 closureMessage.metaLine.textContent = 'thinking ' + chatEvent.text;
                 break;
             case 'memories':
-                for (const memoryLine of chatEvent.text.split('\n')) {
+                for (const memoryLine of parseMemoryList(chatEvent.text)) {
                     addMemoryChip(closureMessage, memoryLine);
                     addTurnMemory(memoryLine, false);
                 }
@@ -1036,6 +1126,7 @@ messageInput.addEventListener('paste', pasteEvent => {
 
 document.addEventListener('keydown', keyEvent => {
     if (keyEvent.key === 'Escape') {
+        if (closeFileViewer()) return;
         if (activeTurnController) activeTurnController.abort();
         else if (editingLastMessage) stopEditingLastMessage(true);
         else closeDrawers();

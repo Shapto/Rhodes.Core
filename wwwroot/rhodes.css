@@ -60,13 +60,23 @@ button:disabled {
 }
 
 @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+    0%, 100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.3;
+    }
 }
 
 @keyframes sweep {
-    from { transform: translateX(-100%); }
-    to { transform: translateX(250%); }
+    from {
+        transform: translateX(-100%);
+    }
+
+    to {
+        transform: translateX(250%);
+    }
 }
 
 /* ---------- layout: chats left, chat centered, readouts right ---------- */
@@ -282,14 +292,14 @@ main {
     opacity: 0;
 }
 
-    .chat-entry:hover .chat-delete,
-    .chat-entry:focus-within .chat-delete {
-        opacity: 1;
-    }
+.chat-entry:hover .chat-delete,
+.chat-entry:focus-within .chat-delete {
+    opacity: 1;
+}
 
-    .chat-delete:hover {
-        color: var(--danger);
-    }
+.chat-delete:hover {
+    color: var(--danger);
+}
 
 .rename-input {
     width: 100%;
@@ -669,11 +679,11 @@ header {
     color: #8fc7ff;
 }
 
-.hljs-type,
-.hljs-title.class_,
-.hljs-class .hljs-title {
-    color: #7fd8d0;
-}
+    .hljs-type,
+    .hljs-title.class_,
+    .hljs-class .hljs-title {
+        color: #7fd8d0;
+    }
 
 .hljs-attr,
 .hljs-attribute,
@@ -1233,4 +1243,101 @@ textarea {
     flex-wrap: wrap;
     gap: 4px;
     font: 11px 'JetBrains Mono', monospace;
+}
+
+/* ---------- file viewer ---------- */
+
+.file-open {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+}
+
+    .file-open:hover {
+        color: var(--accent);
+    }
+
+.file-viewer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+    background: rgba(0, 0, 0, 0.6);
+}
+
+.file-viewer {
+    width: min(960px, 100%);
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border-top: 2px solid var(--accent);
+}
+
+.file-viewer-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+}
+
+.file-viewer-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--text-strong);
+}
+
+.file-viewer-size {
+    font-size: 11px;
+    color: var(--text-faint);
+}
+
+.file-viewer-close {
+    min-width: 30px;
+    min-height: 30px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text-muted);
+    font: 16px 'JetBrains Mono', monospace;
+    cursor: pointer;
+}
+
+    .file-viewer-close:hover {
+        color: var(--danger);
+        border-color: #5a3a3a;
+    }
+
+.file-viewer-body {
+    margin: 0;
+    padding: 14px;
+    overflow: auto;
+    background: var(--ground);
+    font: 12.5px/1.5 'JetBrains Mono', monospace;
+    color: var(--text-body);
+    white-space: pre;
+    tab-size: 4;
+}
+
+@media (max-width: 760px) {
+    .file-viewer-backdrop {
+        padding: 0;
+    }
+
+    .file-viewer {
+        height: 100%;
+    }
 }
