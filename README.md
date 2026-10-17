@@ -1,6 +1,6 @@
 # Rhodes.Core
 
-Rhodes.Core is a .NET 9 ASP.NET Core application that powers a local AI assistant runtime called Shapto. It combines a chat loop, model connectivity, persistent memory, document and workspace tools, web reading, and an approval gate so the assistant can safely act on the user's behalf.
+Rhodes.Core is a .NET 9 ASP.NET Core application that powers a local AI assistant runtime called Closure. It combines a chat loop, model connectivity, persistent memory, document and workspace tools, web reading, and an approval gate so the assistant can safely act on the user's behalf.
 
 ## What it does
 
