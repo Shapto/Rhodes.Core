@@ -152,7 +152,7 @@ public static partial class DocumentMap
     [GeneratedRegex(@"<defName>(?<name>[^<]{1,120})</defName>")]
     private static partial Regex DefinitionNamePattern();
 
-    [GeneratedRegex(@"exception|\berror\b|\bfailed\b|\bfatal\b", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"exception|\berror\b|\bfailed to\b|\bcould not\b|\bfatal\b", RegexOptions.IgnoreCase)]
     private static partial Regex ErrorPattern();
 
     [GeneratedRegex(@"\bwarn(?:ing)?\b", RegexOptions.IgnoreCase)]
