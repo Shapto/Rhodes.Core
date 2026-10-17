@@ -164,6 +164,10 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
     {
         await SendAsync(new { type = "error", text = exception.Message });
     }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    {
+        // I pressed stop or closed the page; the turn has already been rolled back.
+    }
 
     async Task TrySendAsync(object payload)
     {
@@ -179,6 +183,9 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
 });
 
 app.MapGet("/chats", (ConversationStore conversationStore) => conversationStore.List(50));
+
+app.MapGet("/uploads/{uploadId}", (string uploadId, UploadStore uploadStore) =>
+    uploadStore.Load(uploadId) is { } upload ? Results.Text(upload.Text, "text/plain; charset=utf-8") : Results.NotFound());
 
 app.MapPost("/uploads", async (IFormFile file, UploadStore uploadStore, CancellationToken cancellationToken) =>
 {

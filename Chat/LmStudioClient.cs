@@ -129,7 +129,6 @@ public sealed class LmStudioClient
         JsonNode? timings = null;
         double? firstTokenSeconds = null;
         var keepReading = true;
-        var tokensPerSecond = RecordSpeed(usage, timings, stopwatch.Elapsed.TotalSeconds, firstTokenSeconds);
 
         while (keepReading && await reader.ReadLineAsync(cancellationToken) is { } line)
         {
@@ -185,7 +184,7 @@ public sealed class LmStudioClient
             usage?["completion_tokens"],
             keepReading ? "" : ", stopped early");
 
-        RecordSpeed(usage, timings, stopwatch.Elapsed.TotalSeconds, firstTokenSeconds);
+        var tokensPerSecond = RecordSpeed(usage, timings, stopwatch.Elapsed.TotalSeconds, firstTokenSeconds);
 
         var message = BuildMessage(contentBuilder, reasoningBuilder, toolCallParts);
         message["rhodes_prompt_tokens"] = usage?["prompt_tokens"]?.DeepClone();

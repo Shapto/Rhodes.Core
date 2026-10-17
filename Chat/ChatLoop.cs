@@ -57,24 +57,25 @@ public sealed class ChatLoop
             var now = DateTimeOffset.Now;
 
             var (messageText, forcedLevel) = ParseThinkingCommand(userText);
+            var (attachmentText, attachmentChips) = BuildAttachments(attachmentIds, conversation);
+            if (attachmentChips.Count > 0)
+            {
+                await EmitAsync(onEvent, new ChatEvent("attachments", attachmentChips.ToJsonString()));
+            }
+
+            var hasInlineAttachment = attachmentChips.Any(attachmentChip => attachmentChip?["inline"]?.GetValue<bool>() == true);
             var thinkingLevel = forcedLevel ?? thinkingSetting switch
             {
                 "on" => ThinkingLevel.Full,
                 "off" => ThinkingLevel.Off,
-                _ => ThinkingClassifier.Classify(messageText),
+                _ => hasInlineAttachment ? ThinkingLevel.Full : ThinkingClassifier.Classify(messageText),
             };
             await EmitAsync(onEvent, new ChatEvent("thinkingLevel", thinkingLevel.ToString().ToLowerInvariant()));
 
             var injectedMemories = FindMemoriesToInject(messageText);
             if (injectedMemories.Count > 0)
             {
-                await EmitAsync(onEvent, new ChatEvent("memories", string.Join("\n", injectedMemories)));
-            }
-
-            var (attachmentText, attachmentChips) = BuildAttachments(attachmentIds, conversation);
-            if (attachmentChips.Count > 0)
-            {
-                await EmitAsync(onEvent, new ChatEvent("attachments", attachmentChips.ToJsonString()));
+                await EmitAsync(onEvent, new ChatEvent("memories", JsonSerializer.Serialize(injectedMemories)));
             }
 
             var memoryBlock = BuildMemoryBlock(injectedMemories);
@@ -408,13 +409,13 @@ public sealed class ChatLoop
     }
 
     /// <summary>
-    /// The top hit may get in on one shared word; every other memory needs at least two,
-    /// so a single incidental word in the message doesn't drag in unrelated facts.
+    /// A memory needs at least two words in common with the message, so one incidental word ("class", "running")
+    /// doesn't drag in unrelated facts. Only a one-word message can match on a single word.
     /// </summary>
     public IReadOnlyList<string> FindMemoriesToInject(string userText)
     {
         var messageWords = MemoryStore.GetSearchWords(userText);
-        var requiredSharedWords = messageWords.Count <= 2 ? 1 : 2;
+        var requiredSharedWords = messageWords.Count <= 1 ? 1 : 2;
         return memoryRanker.Rank(userText, AutoInjectCount, includeArchive: false, countAsAccess: false)
             .Where(rankedMemory => !rankedMemory.Memory.Content.Contains("think>", StringComparison.OrdinalIgnoreCase))
             .Where(rankedMemory => rankedMemory.Similarity >= AutoInjectMinimumSimilarity && CountSharedWords(messageWords, rankedMemory.Memory) >= requiredSharedWords)
