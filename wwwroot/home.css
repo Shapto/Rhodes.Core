@@ -1,0 +1,403 @@
+/* Rhodes home page (board L). Uses the tokens and shared pieces from rhodes.css. */
+
+:root {
+    --type-fact: #8fc7ff;
+    --type-preference: #a8d8a0;
+    --type-project: #b18cff;
+    --type-event: #f0c38a;
+    --type-persona: #e6b8ff;
+    --type-archive: #6f7c84;
+}
+
+.home {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 18px 20px 40px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.home-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 14px;
+    align-items: start;
+}
+
+.home-main,
+.home-side {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+}
+
+@media (max-width: 960px) {
+    .home-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 760px) {
+    .home {
+        padding: 12px 16px 32px;
+    }
+}
+
+/* ---------- panels ---------- */
+
+.panel {
+    background: var(--panel);
+    border-top: 2px solid var(--line-strong);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+    .panel.accent {
+        border-top-color: var(--accent);
+    }
+
+.panel-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 13px;
+    letter-spacing: 0.14em;
+    color: var(--text-faint);
+}
+
+.panel-heading-note {
+    font-size: 11px;
+    letter-spacing: 0;
+    font-weight: 400;
+}
+
+/* rhodes.css makes every form a sticky chat input; the start box is an ordinary panel. */
+form.start-form {
+    position: static;
+    margin: 0;
+    padding: 14px 16px;
+    background: var(--panel);
+    border-top: 2px solid var(--accent);
+    gap: 10px;
+}
+
+/* ---------- pick up where you left off ---------- */
+
+.resume-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.resume-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.resume-title {
+    font-size: 18px;
+    color: var(--text-strong);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.resume-meta {
+    font-size: 12px;
+    color: var(--text-faint);
+}
+
+/* ---------- memory panel ---------- */
+
+.type-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.type-tab {
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text-muted);
+    font: 11px 'JetBrains Mono', monospace;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+}
+
+    .type-tab .tab-count {
+        color: var(--text-faint);
+        margin-left: 6px;
+    }
+
+    .type-tab:hover {
+        color: var(--text-strong);
+    }
+
+    .type-tab[aria-selected="true"] {
+        border-color: var(--accent);
+        background: var(--chip);
+        color: var(--accent);
+    }
+
+    .type-tab.review {
+        border-color: #5a4a2a;
+        color: var(--warning);
+    }
+
+        .type-tab.review[aria-selected="true"] {
+            background: #241e14;
+        }
+
+.memory-toolbar {
+    display: flex;
+    gap: 8px;
+}
+
+.memory-search,
+.memory-sort {
+    min-height: 36px;
+    box-sizing: border-box;
+    border: 1px solid var(--line);
+    background: var(--ground);
+    color: var(--text-strong);
+}
+
+.memory-search {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 10px;
+    font: 13px 'JetBrains Mono', monospace;
+}
+
+    .memory-search::placeholder {
+        color: var(--text-faint);
+    }
+
+.memory-sort {
+    padding: 0 8px;
+    font-size: 12px;
+}
+
+.memory-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.memory-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--panel-raised);
+    border-left: 2px solid var(--type-color, var(--line-strong));
+    transition: opacity 0.25s;
+}
+
+    .memory-row.leaving {
+        opacity: 0;
+    }
+
+.memory-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font: 11px 'JetBrains Mono', monospace;
+    color: var(--text-faint);
+}
+
+.type-badge {
+    padding: 1px 6px;
+    border: 1px solid var(--type-color, var(--line-strong));
+    color: var(--type-color, var(--text-muted));
+    letter-spacing: 0.08em;
+}
+
+.review-badge {
+    padding: 1px 6px;
+    border: 1px solid #5a4a2a;
+    color: var(--warning);
+    letter-spacing: 0.08em;
+}
+
+.memory-content {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text-body);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+    .memory-content.clamped {
+        display: -webkit-box;
+        -webkit-line-clamp: 4;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+
+.memory-expand {
+    align-self: flex-start;
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--accent-link);
+    font: 11px 'JetBrains Mono', monospace;
+    cursor: pointer;
+}
+
+.memory-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font: 11px 'JetBrains Mono', monospace;
+    color: var(--text-faint);
+}
+
+.memory-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.type-select {
+    min-height: 26px;
+    border: 1px solid var(--line);
+    background: var(--ground);
+    color: var(--text-muted);
+    font: 11px 'JetBrains Mono', monospace;
+}
+
+.turn-action.danger:hover:not(:disabled) {
+    color: var(--danger);
+    border-color: #5a3a3a;
+}
+
+.memory-empty {
+    padding: 18px 4px;
+    font: 12px 'JetBrains Mono', monospace;
+    color: var(--text-faint);
+    text-align: center;
+}
+
+.load-more {
+    align-self: center;
+    min-height: 34px;
+    padding: 0 16px;
+    border: 1px solid var(--line-strong);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+}
+
+    .load-more:hover {
+        color: var(--accent);
+        border-color: var(--accent);
+    }
+
+/* Type colors, used by the left edge, badges and the bars. */
+[data-type="fact"] { --type-color: var(--type-fact); }
+[data-type="preference"] { --type-color: var(--type-preference); }
+[data-type="project"] { --type-color: var(--type-project); }
+[data-type="event"] { --type-color: var(--type-event); }
+[data-type="persona"] { --type-color: var(--type-persona); }
+[data-type="archive"] { --type-color: var(--type-archive); }
+
+/* ---------- side column ---------- */
+
+.recent-chats {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.recent-chat {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 6px 8px;
+    border: 0;
+    border-left: 2px solid transparent;
+    background: none;
+    text-align: left;
+    color: var(--text-body);
+    font: 14px Barlow, sans-serif;
+    cursor: pointer;
+}
+
+    .recent-chat:hover {
+        background: var(--panel-raised);
+        border-left-color: var(--accent);
+    }
+
+    .recent-chat .chat-title {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+.type-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 4px;
+}
+
+.type-bar-row {
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr) 36px;
+    align-items: center;
+    gap: 8px;
+    font: 11px 'JetBrains Mono', monospace;
+    color: var(--text-muted);
+}
+
+.type-bar-track {
+    height: 5px;
+    background: var(--line);
+}
+
+.type-bar-fill {
+    height: 100%;
+    background: var(--type-color, var(--accent));
+}
+
+.type-bar-count {
+    text-align: right;
+    color: var(--text-body);
+}
+
+.later-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+}
+
+    .later-list li {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        color: var(--text-muted);
+    }
+
+        .later-list li span:last-child {
+            color: var(--text-faint);
+        }

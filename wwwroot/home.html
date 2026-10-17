@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Home · Rhodes</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="rhodes.css">
+    <link rel="stylesheet" href="home.css">
+</head>
+<body>
+    <div class="home">
+        <header class="home-header">
+            <div class="identity">
+                <div class="portrait cut-small label" role="img" aria-label="Closure's portrait">C</div>
+                <div class="identity-text">
+                    <span class="identity-name label">CLOSURE</span>
+                    <span class="identity-line" id="greetingLine">home</span>
+                </div>
+            </div>
+            <nav class="page-switch label" aria-label="Pages">
+                <a href="home.html" aria-current="page">HOME</a>
+                <a href="chat.html">CHAT</a>
+            </nav>
+            <span class="model-chip mono" id="modelChip" data-state="checking" role="status">RHODES · CHECKING</span>
+        </header>
+
+        <div class="home-grid">
+            <div class="home-main" role="main">
+                <form class="start-form cut" id="startForm">
+                    <label for="startInput" class="panel-heading label">START A NEW CHAT</label>
+                    <div class="input-row">
+                        <textarea id="startInput" rows="1" placeholder="say something to Closure · Enter sends, Shift+Enter for a new line"></textarea>
+                        <button type="submit" class="send cut-small label">START</button>
+                    </div>
+                </form>
+
+                <section class="panel accent cut" id="resumePanel" aria-labelledby="resumeHeading" hidden>
+                    <div class="panel-heading label" id="resumeHeading">PICK UP WHERE YOU LEFT OFF</div>
+                    <div class="resume-card">
+                        <div class="resume-text">
+                            <span class="resume-title" id="resumeTitle"></span>
+                            <span class="resume-meta mono" id="resumeMeta"></span>
+                        </div>
+                        <button type="button" class="send cut-small label" id="resumeButton">OPEN</button>
+                    </div>
+                </section>
+
+                <section class="panel accent cut memory-panel" aria-labelledby="memoryHeading">
+                    <div class="panel-heading label">
+                        <span id="memoryHeading">MEMORY</span>
+                        <span class="panel-heading-note mono" id="memoryTotalNote"></span>
+                    </div>
+                    <div class="type-tabs" id="typeTabs" role="tablist" aria-label="Memory types"></div>
+                    <div class="memory-toolbar">
+                        <input type="search" class="memory-search" id="memorySearch" placeholder="search memories and tags" aria-label="Search memories">
+                        <select class="memory-sort mono" id="memorySort" aria-label="Sort memories">
+                            <option value="newest">newest first</option>
+                            <option value="oldest">oldest first</option>
+                            <option value="most-used">most used</option>
+                        </select>
+                    </div>
+                    <div class="memory-list" id="memoryList" aria-live="polite"></div>
+                    <button type="button" class="load-more mono" id="loadMoreButton" hidden>LOAD MORE</button>
+                </section>
+            </div>
+
+            <aside class="home-side">
+                <section class="panel cut" aria-labelledby="modulesHeading">
+                    <div class="panel-heading label" id="modulesHeading">MODULES</div>
+                    <dl class="readout-grid">
+                        <dt>core</dt><dd id="moduleCore">—</dd>
+                        <dt>model</dt><dd id="moduleModel">—</dd>
+                        <dt>speed</dt><dd id="moduleSpeed">—</dd>
+                    </dl>
+                </section>
+
+                <section class="panel cut" aria-labelledby="recentHeading">
+                    <div class="panel-heading label" id="recentHeading">RECENT CHATS</div>
+                    <div class="recent-chats" id="recentChats"><span class="readout-empty">loading…</span></div>
+                </section>
+
+                <section class="panel cut" aria-labelledby="statisticsHeading">
+                    <div class="panel-heading label" id="statisticsHeading">MEMORY AT A GLANCE</div>
+                    <dl class="readout-grid">
+                        <dt>total</dt><dd id="statisticsTotal">—</dd>
+                        <dt>saved this week</dt><dd id="statisticsWeek">—</dd>
+                        <dt>needs review</dt><dd id="statisticsReview">—</dd>
+                    </dl>
+                    <div class="type-bars" id="typeBars"></div>
+                </section>
+
+                <section class="panel cut later" aria-labelledby="laterHeading">
+                    <div class="panel-heading label" id="laterHeading">LATER</div>
+                    <ul class="later-list mono">
+                        <li><span>morning brief</span><span>needs the heartbeat</span></li>
+                        <li><span>her journal</span><span>needs the heartbeat</span></li>
+                        <li><span>while you were away</span><span>needs the heartbeat</span></li>
+                        <li><span>project board</span><span>not designed yet</span></li>
+                    </ul>
+                </section>
+            </aside>
+        </div>
+    </div>
+
+    <script src="rhodes-common.js"></script>
+    <script src="home.js"></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
@@ -26,6 +26,10 @@
                         <span class="identity-line" id="identityLine">new chat</span>
                     </div>
                 </div>
+                <nav class="page-switch label" aria-label="Pages">
+                    <a href="home.html">HOME</a>
+                    <a href="chat.html" aria-current="page">CHAT</a>
+                </nav>
                 <span class="model-chip mono" id="modelChip" data-state="checking" role="status">RHODES · CHECKING</span>
                 <button type="button" class="drawer-toggle" id="readoutsToggle" aria-label="Show readouts">▤</button>
             </header>
@@ -124,6 +128,7 @@
     <script src="lib/purify.min.js"></script>
     <script src="lib/highlight.min.js"></script>
     <script src="lib/highlight-powershell.min.js"></script>
+    <script src="rhodes-common.js"></script>
     <script src="rhodes.js"></script>
 </body>
 </html>

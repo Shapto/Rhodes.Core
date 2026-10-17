@@ -69,7 +69,7 @@ builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
 var app = builder.Build();
 
 app.UseStaticFiles();
-app.MapGet("/", () => Results.Redirect("/test.html"));
+app.MapGet("/", () => Results.Redirect("/home.html"));
 app.MapGet("/status", (ModelStatusMonitor modelStatusMonitor) => modelStatusMonitor.Current);
 
 app.MapGet("/memory/inject-preview", (string message, ChatLoop chatLoop) => chatLoop.FindMemoriesToInject(message));
@@ -233,6 +233,16 @@ app.MapGet("/chats/{conversationId}/compaction", (string conversationId, Convers
 
 app.MapGet("/chats/{conversationId}", (string conversationId, ConversationManager conversationManager) =>
     conversationManager.Get(conversationId) is { } conversation ? Results.Ok(ConversationManager.ToView(conversation, contextTokens)) : Results.NotFound());
+
+app.MapGet("/memory/list", (string? type, string? search, string? sort, int? offset, int? limit, MemoryStore store) =>
+{
+    var memoryPage = store.ListMemories(type, search, sort ?? "newest", Math.Max(0, offset ?? 0), Math.Clamp(limit ?? 30, 1, 100));
+    var memories = memoryPage.Memories
+        .Select(memory => new { memory.Id, memory.Content, memory.Type, memory.Tags, memory.Source, memory.Confidence, memory.CreatedAt, memory.LastAccessedAt, memory.AccessCount, memory.NeedsReview })
+        .ToList();
+    return Results.Ok(new { memoryPage.Total, Memories = memories });
+});
+app.MapGet("/memory/statistics", (MemoryStore store) => store.GetStatistics());
 
 app.MapGet("/memory/search", (string query, MemoryStore store) => store.Search(query, limit: 5, includeArchive: false));
 app.MapGet("/memory/recent", (MemoryStore store) => store.GetRecent(10));

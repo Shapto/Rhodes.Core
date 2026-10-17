@@ -47,6 +47,16 @@ namespace Rhodes.Core.Memory
     public sealed record MemorySearchHit(MemoryRecord Memory, double KeywordScore);
 
     /// <summary>
+    /// One page of the dashboard's memory list, plus how many memories match in total.
+    /// </summary>
+    public sealed record MemoryPage(IReadOnlyList<MemoryRecord> Memories, long Total);
+
+    /// <summary>
+    /// Counts for the dashboard: all memories, per type, flagged for review, and saved in the last 7 days.
+    /// </summary>
+    public sealed record MemoryStatistics(long Total, IReadOnlyDictionary<string, long> ByType, long NeedsReview, long SavedThisWeek);
+
+    /// <summary>
     /// One row of the import breakdown: how many memories share an old category, source and review flag.
     /// </summary>
     public sealed record MemoryBreakdownRow(string Category, string Source, bool NeedsReview, long Count);
@@ -553,6 +563,73 @@ namespace Rhodes.Core.Memory
                     ("$type", type),
                     ("$id", memoryId));
                 return updatedRows > 0;
+            }
+        }
+
+        /// <summary>
+        /// One page of memories for the dashboard. typeFilter is a memory type, "review" for flagged ones, or null for all;
+        /// searchText matches content and tags, case-insensitive. sortOrder is "newest", "oldest" or "most-used".
+        /// </summary>
+        public MemoryPage ListMemories(string? typeFilter, string? searchText, string sortOrder, int offset, int limit)
+        {
+            // Only fixed SQL fragments are concatenated; everything Shapto types goes in as a parameter.
+            var typeClause = typeFilter switch
+            {
+                null or "" or "all" => "1 = 1",
+                "review" => "closure_memory_meta.needs_review = 1",
+                _ => "closure_memory_meta.type = $type",
+            };
+            var searchClause = string.IsNullOrWhiteSpace(searchText) ? "" : " AND (memories.content LIKE '%' || $search || '%' OR memories.tags LIKE '%' || $search || '%')";
+            var orderClause = sortOrder switch
+            {
+                "oldest" => "memories.created_at ASC",
+                "most-used" => "memories.access_count DESC, memories.last_accessed_at DESC",
+                _ => "memories.created_at DESC",
+            };
+            var fromClause = " FROM memories JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id WHERE " + typeClause + searchClause;
+            var parameters = new (string Name, object? Value)[]
+            {
+                ("$type", typeFilter),
+                ("$search", searchText?.Trim()),
+                ("$limit", limit),
+                ("$offset", offset),
+            };
+
+            lock (databaseLock)
+            {
+                using var countCommand = CreateCommand(null, "SELECT COUNT(*)" + fromClause + ";", parameters);
+                var total = Convert.ToInt64(countCommand.ExecuteScalar());
+                using var pageCommand = CreateCommand(null, "SELECT " + MemoryColumns + fromClause + " ORDER BY " + orderClause + " LIMIT $limit OFFSET $offset;", parameters);
+                return new MemoryPage(ReadAllMemories(pageCommand), total);
+            }
+        }
+
+        public MemoryStatistics GetStatistics()
+        {
+            var weekAgoMilliseconds = DateTimeOffset.UtcNow.AddDays(-7).ToUnixTimeMilliseconds();
+            lock (databaseLock)
+            {
+                var countsByType = new Dictionary<string, long>();
+                using (var typeCommand = CreateCommand(null, "SELECT closure_memory_meta.type, COUNT(*) FROM memories JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id GROUP BY closure_memory_meta.type;"))
+                using (var typeReader = typeCommand.ExecuteReader())
+                {
+                    while (typeReader.Read())
+                    {
+                        countsByType[typeReader.GetString(0)] = typeReader.GetInt64(1);
+                    }
+                }
+
+                using var summaryCommand = CreateCommand(null, """
+                SELECT COUNT(*),
+                       COALESCE(SUM(closure_memory_meta.needs_review), 0),
+                       COALESCE(SUM(CASE WHEN memories.created_at >= $weekAgo THEN 1 ELSE 0 END), 0)
+                FROM memories
+                JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id;
+                """,
+                    ("$weekAgo", weekAgoMilliseconds));
+                using var summaryReader = summaryCommand.ExecuteReader();
+                summaryReader.Read();
+                return new MemoryStatistics(summaryReader.GetInt64(0), countsByType, summaryReader.GetInt64(1), summaryReader.GetInt64(2));
             }
         }
 

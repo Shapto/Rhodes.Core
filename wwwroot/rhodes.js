@@ -1,4 +1,5 @@
 // Rhodes chat page: talks to the core's /chat/stream, /chats, /uploads and /status endpoints.
+// Needs rhodes-common.js loaded first (helpers, status polling, dialogs).
 'use strict';
 
 const page = document.getElementById('page');
@@ -22,7 +23,6 @@ const compactionText = document.getElementById('compactionText');
 const pendingAttachmentsElement = document.getElementById('pendingAttachments');
 const drawerBackdrop = document.getElementById('drawerBackdrop');
 
-const conversationStorageKey = 'rhodesConversationId';
 const compactionStartFraction = 0.7;
 const pastedTextAttachmentCharacters = 6000;
 const baseDocumentTitle = 'Closure · Rhodes';
@@ -56,31 +56,12 @@ if (highlightingAvailable) {
 // ---------- small helpers ----------
 
 function readStoredConversationId() {
-    try { return localStorage.getItem(conversationStorageKey); } catch { return null; }
+    return readStorage(conversationStorageKey);
 }
 
 function storeConversationId(conversationId) {
     currentConversationId = conversationId;
-    try {
-        if (conversationId) localStorage.setItem(conversationStorageKey, conversationId);
-        else localStorage.removeItem(conversationStorageKey);
-    } catch { }
-}
-
-function addElement(parentElement, tagName, className, text) {
-    const newElement = document.createElement(tagName);
-    if (className) newElement.className = className;
-    if (text !== undefined && text !== null) newElement.textContent = text;
-    parentElement.appendChild(newElement);
-    return newElement;
-}
-
-function createElementBefore(beforeElement, tagName, className, text) {
-    const newElement = document.createElement(tagName);
-    if (className) newElement.className = className;
-    if (text !== undefined && text !== null) newElement.textContent = text;
-    beforeElement.parentElement.insertBefore(newElement, beforeElement);
-    return newElement;
+    writeStorage(conversationStorageKey, conversationId);
 }
 
 function isNearBottom() {
@@ -96,17 +77,6 @@ function updateJumpButton() {
     jumpButton.hidden = isNearBottom() || messagesElement.childElementCount === 0;
 }
 
-function formatTokens(tokenCount) {
-    if (tokenCount === null || tokenCount === undefined) return '—';
-    return tokenCount >= 1000 ? (tokenCount / 1000).toFixed(tokenCount >= 10000 ? 0 : 1) + 'K' : String(tokenCount);
-}
-
-function formatWhen(isoText) {
-    const when = new Date(isoText);
-    const isToday = when.toDateString() === new Date().toDateString();
-    return isToday ? when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : when.toLocaleDateString();
-}
-
 // "14:02" today, "Fri 14:02" within a week, otherwise the date.
 function formatSentTime(isoText) {
     if (!isoText) return '';
@@ -115,16 +85,6 @@ function formatSentTime(isoText) {
     const timeText = sentAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     if (sentAt.toDateString() === new Date().toDateString()) return timeText;
     return ageInDays < 7 ? sentAt.toLocaleDateString([], { weekday: 'short' }) + ' ' + timeText : sentAt.toLocaleDateString();
-}
-
-async function readErrorText(response) {
-    const responseText = await response.text();
-    try {
-        const parsed = JSON.parse(responseText);
-        return typeof parsed === 'string' ? parsed : parsed.detail || parsed.title || responseText;
-    } catch {
-        return responseText || ('error ' + response.status);
-    }
 }
 
 // The core sends injected memories as a JSON array, because one memory can span several lines.
@@ -218,19 +178,6 @@ function addFileName(chipElement, attachment) {
 }
 
 // ---------- markdown, code blocks, highlighting ----------
-
-function copyText(textToCopy) {
-    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(textToCopy);
-    // Over plain http from another machine the clipboard API isn't available, so fall back to the old way.
-    const helperTextarea = addElement(document.body, 'textarea');
-    helperTextarea.value = textToCopy;
-    helperTextarea.style.position = 'fixed';
-    helperTextarea.style.opacity = '0';
-    helperTextarea.select();
-    document.execCommand('copy');
-    helperTextarea.remove();
-    return Promise.resolve();
-}
 
 function decorateCodeBlock(preElement) {
     const codeElement = preElement.querySelector('code');
@@ -632,10 +579,18 @@ function startRename(chatEntry, chatSummary) {
 }
 
 async function deleteChat(chatSummary) {
-    if (!confirm('Delete "' + (chatSummary.title || 'untitled') + '"? This can\'t be undone.')) return;
+    const confirmed = await showDialog({
+        title: 'DELETE CHAT',
+        message: "This deletes the whole chat from rhodes.db. It can't be undone.",
+        detail: chatSummary.title || 'untitled',
+        confirmText: 'DELETE',
+        cancelText: 'CANCEL',
+        danger: true,
+    });
+    if (!confirmed) return;
     const response = await fetch('/chats/' + chatSummary.id, { method: 'DELETE' });
     if (!response.ok && response.status !== 404) {
-        alert(await readErrorText(response));
+        await showNotice("COULDN'T DELETE", await readErrorText(response));
         return;
     }
     if (chatSummary.id === currentConversationId) startNewChat();
@@ -764,9 +719,7 @@ function hideCompaction() {
 
 function showModelStatus(state, detail, tokensPerSecond) {
     modelChip.dataset.state = state;
-    const speedText = tokensPerSecond ? ' · ' + tokensPerSecond.toFixed(1) + ' TOK/S' : '';
-    const chipTexts = { online: 'RHODES · ONLINE' + speedText, loading: 'RHODES · LOADING MODEL', offline: 'RHODES · MODEL OFFLINE', unreachable: 'RHODES · CORE OFFLINE' };
-    modelChip.textContent = chipTexts[state] || 'RHODES · ' + state.toUpperCase();
+    modelChip.textContent = describeModelChip(state, tokensPerSecond);
     modelChip.title = detail || '';
 
     document.getElementById('readoutCore').textContent = state === 'unreachable' ? 'offline' : 'online';
@@ -786,16 +739,6 @@ function showModelStatus(state, detail, tokensPerSecond) {
     modelBanner.textContent = bannerTexts[state] || '';
     if (wasReady !== modelReady) updateFormState();
     else sendButton.disabled = compactionInProgress || !modelReady || activeTurnController !== null || pendingAttachments.some(attachment => attachment.status === 'uploading');
-}
-
-async function pollModelStatus() {
-    try {
-        const response = await fetch('/status', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
-        const modelStatus = await response.json();
-        showModelStatus(modelStatus.state, modelStatus.detail, modelStatus.tokensPerSecond);
-    } catch {
-        showModelStatus('unreachable', "can't reach the Rhodes core", null);
-    }
 }
 
 // ---------- attachments ----------
@@ -1125,6 +1068,7 @@ messageInput.addEventListener('paste', pasteEvent => {
 });
 
 document.addEventListener('keydown', keyEvent => {
+    if (isDialogOpen()) return;
     if (keyEvent.key === 'Escape') {
         if (closeFileViewer()) return;
         if (activeTurnController) activeTurnController.abort();
@@ -1186,8 +1130,24 @@ document.getElementById('readoutsToggle').addEventListener('click', () => toggle
 document.getElementById('readoutsClose').addEventListener('click', closeDrawers);
 drawerBackdrop.addEventListener('click', closeDrawers);
 
+// A message typed into the home page's box arrives here and starts a new chat.
+async function sendStartMessageFromHome(firstPoll) {
+    const startMessage = readStorage(startMessageStorageKey);
+    if (!startMessage) return;
+    writeStorage(startMessageStorageKey, null);
+    storeConversationId(null);
+    await firstPoll;
+    if (modelReady) {
+        sendMessage(startMessage, [], null);
+    } else {
+        // The model is down: keep the message in the box instead of losing it.
+        messageInput.value = startMessage;
+        resizeMessageInput();
+    }
+}
+
 updateFormState();
-pollModelStatus();
-setInterval(pollModelStatus, 5000);
+const firstModelPoll = startModelStatusPolling(modelStatus => showModelStatus(modelStatus.state, modelStatus.detail, modelStatus.tokensPerSecond));
 refreshChatList();
-if (currentConversationId) loadConversation(currentConversationId);
+if (readStorage(startMessageStorageKey)) sendStartMessageFromHome(firstModelPoll);
+else if (currentConversationId) loadConversation(currentConversationId);
