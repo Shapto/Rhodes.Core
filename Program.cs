@@ -303,6 +303,23 @@ app.MapPost("/memory/{memoryId}/type", (string memoryId, string type, MemoryStor
 
     return store.SetType(memoryId, type) ? Results.Ok() : Results.NotFound();
 });
+
+// The workbench builds its tool form from these, so a new tool shows up there without touching the page.
+app.MapGet("/tools", ([FromServices] IEnumerable<ICoreTool> tools) => tools
+    .Select(tool => new { tool.Name, tool.Description, Parameters = tool.ParametersSchema })
+    .OrderBy(toolInfo => toolInfo.Name));
+
+app.MapGet("/documents", (DocumentStore documentStore) => documentStore.ListRecent(40)
+    .Select(document => new { document.Id, document.Name, document.Source, document.LineCount, Tokens = (int)(document.Characters * DocumentStore.TokensPerCharacter), document.CreatedAt }));
+
+// The same map Closure gets when a big file is attached, built fresh so map fixes show on old documents too.
+app.MapGet("/documents/{documentId}/map", (string documentId, DocumentStore documentStore) =>
+{
+    var document = documentStore.Find(documentId);
+    var text = document is null ? null : documentStore.ReadAllText(documentId);
+    return text is null ? Results.NotFound() : Results.Text(DocumentMap.Describe(document!, DocumentStore.SplitLines(text)), "text/plain; charset=utf-8");
+});
+
 app.MapPost("/tools/{toolName}", async (string toolName, JsonElement arguments, [FromServices] IEnumerable<ICoreTool> tools, CancellationToken cancellationToken) =>
 {
     var tool = tools.FirstOrDefault(candidateTool => candidateTool.Name == toolName);

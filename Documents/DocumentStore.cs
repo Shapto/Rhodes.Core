@@ -207,6 +207,18 @@ public sealed partial class DocumentStore : IDisposable
         return new DocumentLines(document, startLine, lines);
     }
 
+    /// <summary>
+    /// The newest documents first, for the dashboard's workbench.
+    /// </summary>
+    public IReadOnlyList<DocumentRecord> ListRecent(int limit)
+    {
+        lock (databaseLock)
+        {
+            using var command = CreateCommand(null, "SELECT id, name, source, characters, line_count, created_at FROM documents ORDER BY created_at DESC LIMIT $limit;", ("$limit", limit));
+            return ReadDocuments(command);
+        }
+    }
+
     public string? ReadAllText(string documentId)
     {
         var textPath = Path.Combine(documentsFolder, documentId + ".txt");

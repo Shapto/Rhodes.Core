@@ -8,6 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="rhodes.css">
     <link rel="stylesheet" href="home.css">
+    <link rel="stylesheet" href="workbench.css">
 </head>
 <body>
     <div class="home">
@@ -47,22 +48,79 @@
                     </div>
                 </section>
 
-                <section class="panel accent cut memory-panel" aria-labelledby="memoryHeading">
+                <section class="panel cut workbench" aria-labelledby="workbenchHeading">
                     <div class="panel-heading label">
-                        <span id="memoryHeading">MEMORY</span>
-                        <span class="panel-heading-note mono" id="memoryTotalNote"></span>
+                        <span id="workbenchHeading">WORKBENCH</span>
+                        <span class="panel-heading-note mono">look inside the core · only RUN on save_memory changes anything</span>
                     </div>
-                    <div class="type-tabs" id="typeTabs" role="tablist" aria-label="Memory types"></div>
-                    <div class="memory-toolbar">
-                        <input type="search" class="memory-search" id="memorySearch" placeholder="search memories and tags" aria-label="Search memories">
-                        <select class="memory-sort mono" id="memorySort" aria-label="Sort memories">
-                            <option value="newest">newest first</option>
-                            <option value="oldest">oldest first</option>
-                            <option value="most-used">most used</option>
-                        </select>
+                    <div class="type-tabs" id="benchTabs" role="tablist" aria-label="Workbench views">
+                        <button type="button" class="type-tab" role="tab" data-view="probe" aria-selected="true">MEMORY PROBE</button>
+                        <button type="button" class="type-tab" role="tab" data-view="tools" aria-selected="false">TRY A TOOL</button>
+                        <button type="button" class="type-tab" role="tab" data-view="documents" aria-selected="false">DOCUMENTS</button>
+                        <button type="button" class="type-tab" role="tab" data-view="chats" aria-selected="false">CHAT INTERNALS</button>
+                        <button type="button" class="type-tab" role="tab" data-view="legacy" aria-selected="false">OLD CATEGORIES</button>
                     </div>
-                    <div class="memory-list" id="memoryList" aria-live="polite"></div>
-                    <button type="button" class="load-more mono" id="loadMoreButton" hidden>LOAD MORE</button>
+
+                    <div class="bench-view" data-view="probe">
+                        <form class="bench-form" id="probeForm">
+                            <input type="text" class="memory-search" id="probeInput" placeholder="type a message as if you were sending it to Closure" aria-label="Message to probe">
+                            <button type="submit" class="send cut-small label">PROBE</button>
+                        </form>
+                        <p class="bench-note mono">She gets up to 3 memories per message: the top of the ranking, if match is 0.50 or more and they share at least 2 words with your message.</p>
+                        <div class="probe-columns">
+                            <div class="probe-column">
+                                <div class="bench-subheading mono">RANKING · score = 55% match + 20% recency + 10% use + 15% confidence</div>
+                                <div class="probe-results" id="probeRanking"><span class="readout-empty">nothing probed yet</span></div>
+                            </div>
+                            <div class="probe-column">
+                                <div class="bench-subheading mono">KEYWORD HITS · plain full-text match, before ranking</div>
+                                <div class="probe-results" id="probeKeyword"><span class="readout-empty">nothing probed yet</span></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bench-view" data-view="tools" hidden>
+                        <div class="type-tabs" id="toolPicker" aria-label="Tools"></div>
+                        <p class="bench-note" id="toolDescription"></p>
+                        <form class="tool-form" id="toolForm"></form>
+                        <div class="tool-run-row">
+                            <button type="button" class="send cut-small label" id="toolRunButton">RUN</button>
+                            <span class="mono bench-meta" id="toolRunMeta"></span>
+                        </div>
+                        <pre class="bench-output" id="toolOutput" hidden></pre>
+                    </div>
+
+                    <div class="bench-view" data-view="documents" hidden>
+                        <p class="bench-note mono">Big uploads and fetched pages, newest first. MAP shows what Closure is told about the file, rebuilt with the current code.</p>
+                        <div class="bench-table-wrap">
+                            <table class="bench-table">
+                                <thead><tr><th>name</th><th>lines</th><th>tokens</th><th>added</th><th></th></tr></thead>
+                                <tbody id="documentRows"></tbody>
+                            </table>
+                        </div>
+                        <pre class="bench-output" id="documentMap" hidden></pre>
+                    </div>
+
+                    <div class="bench-view" data-view="chats" hidden>
+                        <div class="bench-form">
+                            <select class="memory-sort mono chat-select" id="internalsChatSelect" aria-label="Chat"></select>
+                            <button type="button" class="turn-action" id="internalsOpenButton">OPEN CHAT</button>
+                        </div>
+                        <dl class="readout-grid internals-grid" id="internalsGrid"></dl>
+                        <div class="bench-subheading mono">COMPACTION SUMMARY · what she remembers of the older part of this chat</div>
+                        <pre class="bench-output" id="internalsSummary">—</pre>
+                    </div>
+
+                    <div class="bench-view" data-view="legacy" hidden>
+                        <p class="bench-note mono">Categories from the old memory plugin, kept on every imported memory. Click a row to see its memories.</p>
+                        <div class="bench-table-wrap">
+                            <table class="bench-table">
+                                <thead><tr><th>category</th><th>source</th><th>review</th><th>count</th></tr></thead>
+                                <tbody id="legacyRows"></tbody>
+                            </table>
+                        </div>
+                        <div class="probe-results" id="legacyMemories"></div>
+                    </div>
                 </section>
             </div>
 
@@ -70,9 +128,12 @@
                 <section class="panel cut" aria-labelledby="modulesHeading">
                     <div class="panel-heading label" id="modulesHeading">MODULES</div>
                     <dl class="readout-grid">
-                        <dt>core</dt><dd id="moduleCore">—</dd>
-                        <dt>model</dt><dd id="moduleModel">—</dd>
-                        <dt>speed</dt><dd id="moduleSpeed">—</dd>
+                        <dt>core</dt>
+                        <dd id="moduleCore">—</dd>
+                        <dt>model</dt>
+                        <dd id="moduleModel">—</dd>
+                        <dt>speed</dt>
+                        <dd id="moduleSpeed">—</dd>
                     </dl>
                 </section>
 
@@ -84,9 +145,12 @@
                 <section class="panel cut" aria-labelledby="statisticsHeading">
                     <div class="panel-heading label" id="statisticsHeading">MEMORY AT A GLANCE</div>
                     <dl class="readout-grid">
-                        <dt>total</dt><dd id="statisticsTotal">—</dd>
-                        <dt>saved this week</dt><dd id="statisticsWeek">—</dd>
-                        <dt>needs review</dt><dd id="statisticsReview">—</dd>
+                        <dt>total</dt>
+                        <dd id="statisticsTotal">—</dd>
+                        <dt>saved this week</dt>
+                        <dd id="statisticsWeek">—</dd>
+                        <dt>needs review</dt>
+                        <dd id="statisticsReview">—</dd>
                     </dl>
                     <div class="type-bars" id="typeBars"></div>
                 </section>
@@ -102,9 +166,28 @@
                 </section>
             </aside>
         </div>
+
+        <section class="panel accent cut memory-panel" aria-labelledby="memoryHeading">
+            <div class="panel-heading label">
+                <span id="memoryHeading">MEMORY</span>
+                <span class="panel-heading-note mono" id="memoryTotalNote"></span>
+            </div>
+            <div class="type-tabs" id="typeTabs" role="tablist" aria-label="Memory types"></div>
+            <div class="memory-toolbar">
+                <input type="search" class="memory-search" id="memorySearch" placeholder="search memories and tags" aria-label="Search memories">
+                <select class="memory-sort mono" id="memorySort" aria-label="Sort memories">
+                    <option value="newest">newest first</option>
+                    <option value="oldest">oldest first</option>
+                    <option value="most-used">most used</option>
+                </select>
+            </div>
+            <div class="memory-list" id="memoryList" aria-live="polite"></div>
+            <button type="button" class="load-more mono" id="loadMoreButton" hidden>LOAD MORE</button>
+        </section>
     </div>
 
     <script src="rhodes-common.js"></script>
     <script src="home.js"></script>
+    <script src="workbench.js"></script>
 </body>
 </html>

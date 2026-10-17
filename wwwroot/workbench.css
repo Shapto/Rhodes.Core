@@ -1,0 +1,288 @@
+/* Rhodes home page, workbench panel. Uses the tokens from rhodes.css and the tabs, badges and inputs from home.css. */
+
+.bench-view {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}
+
+    .bench-view[hidden] {
+        display: none;
+    }
+
+/* rhodes.css makes every form a sticky chat input; these are ordinary rows and grids. */
+.bench-form,
+form.bench-form,
+form.tool-form {
+    position: static;
+    margin: 0;
+    padding: 0;
+    background: none;
+}
+
+.bench-form {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    align-items: stretch;
+}
+
+    .bench-form .send {
+        flex: none;
+        padding: 0 22px;
+    }
+
+.bench-note {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-faint);
+}
+
+.bench-subheading {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+}
+
+.bench-meta {
+    font-size: 11px;
+    color: var(--text-faint);
+}
+
+.bench-output {
+    margin: 0;
+    max-height: 420px;
+    overflow: auto;
+    padding: 10px 12px;
+    background: var(--ground);
+    border: 1px solid var(--line);
+    color: var(--text-body);
+    font: 12px/1.5 'JetBrains Mono', monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* ---------- memory probe ---------- */
+
+.probe-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 14px;
+    align-items: start;
+}
+
+@media (max-width: 960px) {
+    .probe-columns {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+.probe-column,
+.probe-results {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.probe-row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px 10px;
+    background: var(--panel-raised);
+    border-left: 2px solid var(--type-color, var(--line-strong));
+}
+
+.memory-content.clamped-two {
+    font-size: 13px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.inject-badge {
+    padding: 1px 6px;
+    border: 1px solid var(--accent);
+    background: var(--chip);
+    color: var(--accent);
+    letter-spacing: 0.08em;
+}
+
+.skip-badge {
+    padding: 1px 6px;
+    border: 1px solid #5a4a2a;
+    color: var(--warning);
+    letter-spacing: 0.08em;
+}
+
+.scores {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px 12px;
+}
+
+@media (max-width: 560px) {
+    .scores {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+.score {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) 30px;
+    align-items: center;
+    gap: 6px;
+    font: 10px 'JetBrains Mono', monospace;
+    color: var(--text-faint);
+}
+
+.score-track {
+    height: 4px;
+    background: var(--line);
+}
+
+.score-fill {
+    height: 100%;
+    background: var(--accent-dim);
+}
+
+.score:first-child .score-fill {
+    background: var(--accent);
+}
+
+.score-value {
+    text-align: right;
+    color: var(--text-body);
+}
+
+/* ---------- try a tool ---------- */
+
+.tool-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 10px 14px;
+}
+
+.tool-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.tool-field-name {
+    font-size: 12px;
+    color: var(--text-body);
+}
+
+.tool-field-required {
+    color: var(--accent);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+}
+
+.tool-field-hint {
+    font-size: 12px;
+    color: var(--text-faint);
+}
+
+.tool-input {
+    min-height: 34px;
+    box-sizing: border-box;
+}
+
+textarea.tool-input {
+    resize: vertical;
+    font: 13px 'JetBrains Mono', monospace;
+}
+
+.tool-run-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* ---------- tables (documents, old categories) ---------- */
+
+.bench-table-wrap {
+    overflow-x: auto;
+}
+
+.bench-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+    .bench-table th {
+        text-align: left;
+        padding: 4px 8px;
+        border-bottom: 1px solid var(--line-strong);
+        color: var(--text-faint);
+        font: 11px 'JetBrains Mono', monospace;
+        letter-spacing: 0.06em;
+        font-weight: 400;
+    }
+
+    .bench-table td {
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--line);
+        color: var(--text-body);
+        vertical-align: top;
+    }
+
+        .bench-table td.mono {
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+    .bench-table tr.clickable {
+        cursor: pointer;
+    }
+
+        .bench-table tr.clickable:hover,
+        .bench-table tr.clickable:focus-visible {
+            background: var(--panel-raised);
+            outline: none;
+        }
+
+        .bench-table tr.selected {
+            background: var(--chip);
+        }
+
+.document-name {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 180px;
+}
+
+.document-source {
+    font-size: 11px;
+    color: var(--text-faint);
+    overflow-wrap: anywhere;
+}
+
+.table-actions {
+    white-space: nowrap;
+    text-align: right;
+}
+
+    .table-actions .turn-action + .turn-action {
+        margin-left: 6px;
+    }
+
+/* ---------- chat internals ---------- */
+
+.chat-select {
+    flex: 1;
+    min-width: 0;
+    max-width: 520px;
+}
+
+.internals-grid {
+    max-width: 520px;
+}
