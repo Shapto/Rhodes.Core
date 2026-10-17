@@ -146,6 +146,23 @@ function showNotice(title, message) {
     return showDialog({ title, message, confirmText: 'OK' });
 }
 
+// ---------- profile pictures ----------
+
+// The core serves Data\pictures\closure.* and shapto.* at /pictures/closure and /pictures/shapto.
+// When one loads, every portrait and avatar of that person shows it; when it's missing, the letter stays.
+function loadProfilePictures() {
+    for (const personName of ['closure', 'shapto']) {
+        const picture = new Image();
+        picture.onload = () => {
+            document.documentElement.style.setProperty('--picture-' + personName, 'url("/pictures/' + personName + '")');
+            document.documentElement.classList.add('has-picture-' + personName);
+        };
+        picture.src = '/pictures/' + personName;
+    }
+}
+
+loadProfilePictures();
+
 // ---------- model status ----------
 
 function describeModelChip(state, tokensPerSecond) {

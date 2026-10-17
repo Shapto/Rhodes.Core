@@ -1489,3 +1489,20 @@ textarea {
     outline: 2px solid var(--accent-link);
     outline-offset: 2px;
 }
+
+/* ---------- shared: profile pictures (cropped square into the angled frame; the letter shows until one loads) ---------- */
+
+.has-picture-closure .portrait,
+.has-picture-closure .avatar.closure {
+    background-image: var(--picture-closure);
+    background-size: cover;
+    background-position: center;
+    color: transparent;
+}
+
+.has-picture-shapto .avatar.user {
+    background-image: var(--picture-shapto);
+    background-size: cover;
+    background-position: center;
+    color: transparent;
+}

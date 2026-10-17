@@ -72,6 +72,22 @@ app.UseStaticFiles();
 app.MapGet("/", () => Results.Redirect("/home.html"));
 app.MapGet("/status", (ModelStatusMonitor modelStatusMonitor) => modelStatusMonitor.Current);
 
+// Profile pictures live in Data\pictures
+var picturesFolder = Path.Combine(Path.GetDirectoryName(databasePath)!, "pictures");
+var pictureTypes = new (string Extension, string ContentType)[] { (".png", "image/png"), (".jpg", "image/jpeg"), (".jpeg", "image/jpeg"), (".webp", "image/webp"), (".gif", "image/gif") };
+app.MapGet("/pictures/{personName}", (string personName) =>
+{
+    if (personName is not ("closure" or "shapto"))
+    {
+        return Results.NotFound();
+    }
+
+    var picture = pictureTypes
+        .Select(pictureType => (Path: Path.Combine(picturesFolder, personName + pictureType.Extension), pictureType.ContentType))
+        .FirstOrDefault(candidate => File.Exists(candidate.Path));
+    return picture.Path is null ? Results.NotFound() : Results.File(picture.Path, picture.ContentType);
+});
+
 app.MapGet("/memory/inject-preview", (string message, ChatLoop chatLoop) => chatLoop.FindMemoriesToInject(message));
 
 app.MapGet("/memory/find", (string text, MemoryStore store) => store.FindContaining(text, 200)
