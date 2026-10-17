@@ -22,6 +22,8 @@ builder.Services.AddSingleton<ICoreTool, SearchMemoryTool>();
 builder.Services.AddSingleton<ICoreTool, SaveMemoryTool>();
 
 var personaPath = builder.Configuration["Persona:Path"] ?? Path.Combine(Path.GetDirectoryName(databasePath)!, "persona.md");
+var contextTokens = builder.Configuration.GetValue("Chat:ContextTokens", 64000);
+builder.Services.AddSingleton(new UploadStore(Path.Combine(Path.GetDirectoryName(databasePath)!, "uploads")));
 
 builder.Services.AddSingleton(serviceProvider => new LmStudioClient(
     builder.Configuration["LmStudio:BaseUrl"] ?? "http://localhost:1234/v1",
@@ -44,9 +46,11 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     serviceProvider.GetRequiredService<LmStudioClient>(),
     serviceProvider.GetRequiredService<MemoryRanker>(),
     conversationStore,
+    serviceProvider.GetRequiredService<UploadStore>(),
     serviceProvider.GetServices<ICoreTool>(),
     personaPath,
     builder.Configuration.GetValue("Chat:MaximumThinkingCharacters", 24000),
+    contextTokens,
     serviceProvider.GetRequiredService<ILogger<ChatLoop>>()));
 
 builder.Services.AddSingleton<ChatTitler>();
@@ -57,7 +61,7 @@ builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
     serviceProvider.GetRequiredService<ChatTitler>(),
     conversationStore,
     personaPath,
-    builder.Configuration.GetValue("Chat:ContextTokens", 64000),
+    contextTokens,
     serviceProvider.GetRequiredService<ILogger<ConversationCompactor>>()));
 
 
@@ -90,7 +94,7 @@ app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitl
         return Results.NotFound("That chat doesn't exist.");
     }
 
-    var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.Client ?? "test console", chatRequest.Thinking ?? "auto", null, cancellationToken);
+    var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.AttachmentIds ?? [], chatRequest.Client ?? "test console", chatRequest.Thinking ?? "auto", null, cancellationToken);
     _ = Task.Run(async () =>
     {
         await chatTitler.TitleNewChatAsync(conversation, CancellationToken.None);
@@ -125,8 +129,8 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
     await SendAsync(new { type = "conversation", text = conversation.Id });
     try
     {
-        var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
-        await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s" });
+        var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.AttachmentIds ?? [], chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
+        await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s", contextTokens = conversation.LastContextTokens, contextLimit = contextTokens });
 
         var newTitle = await chatTitler.TitleNewChatAsync(conversation, CancellationToken.None);
         if (newTitle is not null)
@@ -137,7 +141,7 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         var compacted = await conversationCompactor.CompactIfNeededAsync(conversation, statusText => TrySendAsync(new { type = "status", text = statusText }), CancellationToken.None);
         if (compacted)
         {
-            await TrySendAsync(new { type = "compacted", text = conversation.Title });
+            await TrySendAsync(new { type = "compacted", text = conversation.Title, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens });
         }
     }
     catch (Exception exception) when (exception is not OperationCanceledException)
@@ -160,6 +164,19 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
 
 app.MapGet("/chats", (ConversationStore conversationStore) => conversationStore.List(50));
 
+app.MapPost("/uploads", async (IFormFile file, UploadStore uploadStore, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await using var fileStream = file.OpenReadStream();
+        return Results.Ok(await uploadStore.SaveAsync(file.FileName, fileStream, cancellationToken));
+    }
+    catch (UploadRejectedException exception)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+}).DisableAntiforgery();
+
 app.MapPost("/chats/{conversationId}/title", (string conversationId, TitleRequest titleRequest, ConversationManager conversationManager, ConversationStore conversationStore) =>
 {
     var conversation = conversationManager.Get(conversationId);
@@ -167,7 +184,6 @@ app.MapPost("/chats/{conversationId}/title", (string conversationId, TitleReques
     {
         return Results.NotFound();
     }
-
     var newTitle = titleRequest.Title.Trim();
     if (newTitle.Length == 0)
     {
@@ -186,7 +202,7 @@ app.MapGet("/chats/{conversationId}/compaction", (string conversationId, Convers
         : Results.NotFound());
 
 app.MapGet("/chats/{conversationId}", (string conversationId, ConversationManager conversationManager) =>
-    conversationManager.Get(conversationId) is { } conversation ? Results.Ok(ConversationManager.ToView(conversation)) : Results.NotFound());
+    conversationManager.Get(conversationId) is { } conversation ? Results.Ok(ConversationManager.ToView(conversation, contextTokens)) : Results.NotFound());
 
 app.MapGet("/memory/search", (string query, MemoryStore store) => store.Search(query, limit: 5, includeArchive: false));
 app.MapGet("/memory/recent", (MemoryStore store) => store.GetRecent(10));

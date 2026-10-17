@@ -37,7 +37,7 @@ public sealed class Conversation
     public int LastRequestCharacters { get; set; }
 }
 
-public sealed record ChatRequest(string Message, string? Client, string? Thinking, string? ConversationId);
+public sealed record ChatRequest(string Message, string? Client, string? Thinking, string? ConversationId, IReadOnlyList<string>? AttachmentIds);
 
 public sealed record TitleRequest(string Title);
 

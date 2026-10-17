@@ -2,8 +2,8 @@
 
 namespace Rhodes.Core.Chat;
 
-public sealed record DisplayMessage(int Index, string Role, string Text, string? Reasoning, string? ToolName);
-public sealed record ConversationView(string Id, string Title, string Summary, int SummaryCoversThrough, IReadOnlyList<DisplayMessage> Messages);
+public sealed record DisplayMessage(int Index, string Role, string Text, string? Reasoning, string? ToolName, JsonNode? Attachments);
+public sealed record ConversationView(string Id, string Title, string Summary, int SummaryCoversThrough, int? ContextTokens, int ContextLimit, IReadOnlyList<DisplayMessage> Messages);
 
 /// <summary>
 /// Hands out one shared Conversation object per chat id, loading it from rhodes.db the first time.
@@ -50,9 +50,10 @@ public sealed class ConversationManager
     }
 
     /// <summary>
-    /// What a page shows: the messages with their positions, plus where the summary begins, so the page can draw the marker.
+    /// What a page shows: the messages with their positions, where the summary begins (so the page can draw the marker),
+    /// and how full the context is.
     /// </summary>
-    public static ConversationView ToView(Conversation conversation)
+    public static ConversationView ToView(Conversation conversation, int contextLimit)
     {
         var displayMessages = conversation.Messages
             .Select((message, index) => new DisplayMessage(
@@ -60,10 +61,11 @@ public sealed class ConversationManager
                 GetString(message["role"]) ?? "",
                 GetString(message["rhodes_display_text"]) ?? GetString(message["content"]) ?? "",
                 GetString(message["rhodes_reasoning"]),
-                GetString(message["rhodes_tool_name"])))
+                GetString(message["rhodes_tool_name"]),
+                message["rhodes_attachments"]?.DeepClone()))
             .Where(displayMessage => displayMessage.Text.Length > 0 || displayMessage.Reasoning is not null)
             .ToList();
-        return new ConversationView(conversation.Id, conversation.Title, conversation.Summary, conversation.SummaryCoversThrough, displayMessages);
+        return new ConversationView(conversation.Id, conversation.Title, conversation.Summary, conversation.SummaryCoversThrough, conversation.LastContextTokens, contextLimit, displayMessages);
     }
 
     private static string? GetString(JsonNode? node)
