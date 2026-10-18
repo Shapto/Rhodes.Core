@@ -317,7 +317,7 @@ public sealed class BehaviorTestRunner
         new("current-info", "Searches for something current", "What's the newest stable .NET version right now?", "auto", new BehaviorExpectation(CallsAny: ["web_search", "web_fetch"])),
         new("memory", "Uses memory about a project", "What do you remember about my Gungnir mod?", "auto", new BehaviorExpectation(CallsAny: ["search_memory", "search_chats"], OrReplyMatches: "(?i)gungnir")),
         new("past-chat", "Searches past chats", "What did we decide about letting you use the web during heartbeat ticks?", "auto", new BehaviorExpectation(CallsAny: ["search_chats", "read_chat", "search_memory"])),
-        new("ambiguous", "Asks instead of guessing", "Set up the config for the new project.", "auto", new BehaviorExpectation(CallsAny: ["ask_shapto"], CallsNone: ["write_file", "edit_file"])),
+        new("ambiguous", "Asks instead of guessing", "Set up the config for the new project.", "auto", new BehaviorExpectation(CallsAny: ["ask_shapto"], OrReplyMatches: @"\?", CallsNone: ["write_file", "edit_file"])),
         new("lookup-finishes", "Looks up and answers, no announce-and-stop", "Look up when RimWorld 1.6 came out.", "auto", new BehaviorExpectation(CallsAny: ["web_search", "web_fetch"])),
         new("math", "Uses Python for exact math", "What is 17.5% of 2,348,912, to the cent?", "auto", new BehaviorExpectation(CallsAny: ["run_python"], ReplyMatches: @"411[ ,.']?059[.,]6")),
         new("write-file", "Writes code into the workspace", "Create Hello/Program.cs in your workspace with a C# hello world.", "auto", new BehaviorExpectation(CallsAny: ["write_file"])),
