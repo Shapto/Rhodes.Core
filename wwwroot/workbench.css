@@ -286,3 +286,29 @@ textarea.tool-input {
 .internals-grid {
     max-width: 520px;
 }
+
+/* ---------- behavior tests ---------- */
+
+.behavior-title {
+    min-width: 180px;
+}
+
+.behavior-pass {
+    color: var(--accent);
+    font-weight: 500;
+}
+
+.behavior-fail {
+    color: var(--danger);
+    font-weight: 500;
+}
+
+.behavior-detail td {
+    padding-top: 0;
+}
+
+.behavior-failure {
+    font-size: 12px;
+    color: var(--danger);
+    margin: 2px 0;
+}

@@ -21,6 +21,7 @@ namespace Rhodes.Core.Tools
 
         public string Description =>
             "Ask Shapto 1 to 4 questions in one card when you're missing something you can't look up and a wrong guess would cost them time. " +
+            "Whenever your question comes with choices (\"X, Y or Z?\"), put it in this card instead of writing the choices in your reply. " +
             "Give each question 2 to 4 short options; they can always type their own answer. Your reply ends when you call this, " +
             "and their answers come as their next message. Don't use it for things you can decide or check yourself.";
 

@@ -106,13 +106,13 @@ public sealed partial class ChatLoop
             }
 
             // Journal entries she wrote while Shapto was away and hasn't brought into a chat yet; each is shown once.
-            var unreportedJournalEntries = heartbeatStore.ListUnreportedJournal(MaximumReportedJournalEntries);
+            IReadOnlyList<JournalEntry> unreportedJournalEntries = ToolContext.IsTestRun ? [] : heartbeatStore.ListUnreportedJournal(MaximumReportedJournalEntries);
             if (unreportedJournalEntries.Count > 0)
             {
                 await EmitAsync(onEvent, new ChatEvent("journal", JsonSerializer.Serialize(unreportedJournalEntries.Select(journalEntry => journalEntry.Text), JsonSerializerOptions.Web)));
             }
 
-            var memoryBlock = BuildJournalBlock(unreportedJournalEntries) + BuildMemoryBlock(injectedMemories);
+            var memoryBlock = BuildJournalBlock(unreportedJournalEntries) + BuildMemoryBlock(injectedMemories) + BuildRequestHints(messageText);
             var userContent = BuildUserContent(messageText + attachmentText, clientName, now, conversation.LastUserMessageAt, conversation.CreatedAt, memoryBlock);
             conversation.Messages.Add(new JsonObject
             {
@@ -124,7 +124,7 @@ public sealed partial class ChatLoop
                 ["rhodes_memory_characters"] = memoryBlock.Length,
             });
 
-            var systemPrompt = await File.ReadAllTextAsync(personaPath, cancellationToken);
+            var systemPrompt = await SystemPrompt.LoadAsync(personaPath, cancellationToken);
             var toolSteps = new List<ToolStep>();
             var reasoningParts = new List<string>();
             int? lastPromptTokens = null;
@@ -504,7 +504,7 @@ public sealed partial class ChatLoop
     public async Task WarmUpCacheAsync(Conversation conversation, CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
-        var systemPrompt = await File.ReadAllTextAsync(personaPath, cancellationToken);
+        var systemPrompt = await SystemPrompt.LoadAsync(personaPath, cancellationToken);
         var requestMessages = BuildRequestMessages(systemPrompt, conversation);
         requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = "." });
 
@@ -610,6 +610,11 @@ public sealed partial class ChatLoop
         try
         {
             using var argumentsDocument = JsonDocument.Parse(string.IsNullOrWhiteSpace(argumentsText) ? "{}" : argumentsText);
+            if (ToolContext.IsTestRun && toolName == "save_memory")
+            {
+                return new ToolStep(toolName, argumentsText, "Saved (test run: nothing was stored).");
+            }
+
             var refusal = await approvalService.CheckToolAsync(tool, argumentsDocument.RootElement, ToolContext.EmitEvent, cancellationToken);
             if (refusal is not null)
             {
@@ -737,6 +742,26 @@ public sealed partial class ChatLoop
         builder.AppendLine();
         return builder.ToString();
     }
+
+    /// <summary>
+    /// Reminders for two requests she tended to answer in words only: naming Little Handy (she did the job herself)
+    /// and "remember that…" (she said she would without calling save_memory).
+    /// </summary>
+    private static string BuildRequestHints(string messageText)
+    {
+        var delegationHint = LittleHandyMentionPattern().IsMatch(messageText) ? "[Shapto is asking for Little Handy: hand this job to him with the little_handy tool, with everything he needs in the task.]\n\n" : "";
+        var rememberHint = RememberRequestPattern().IsMatch(messageText) ? "[Shapto is asking you to remember something: save it with the save_memory tool before you reply. Saying you'll remember doesn't store it.]\n\n" : "";
+        return delegationHint + rememberHint;
+    }
+
+    /// <summary>
+    /// "Remember that…", "don't forget…", "note this down", but not "do you remember…".
+    /// </summary>
+    [GeneratedRegex(@"^\W*(?:please\s+|pls\s+|also\s+|and\s+)?(?:remember|don't forget|do not forget|keep in mind|note (?:down|this|that))\b(?![^.!?]*\?)|(?<!\b(?:you|we|i)\s)\b(?:remember|don't forget|keep in mind)\s+(?:that|this)\b(?![^.!?]*\?)|\b(?:save|note) (?:this|that) (?:to|in) (?:your )?memory\b", RegexOptions.IgnoreCase)]
+    private static partial Regex RememberRequestPattern();
+
+    [GeneratedRegex(@"\blittle\s*handy\b|\b(?:ask|use|get|have|let|send|tell)\s+handy\b", RegexOptions.IgnoreCase)]
+    private static partial Regex LittleHandyMentionPattern();
 
     /// <summary>
     /// The "[Memories that may be relevant]" block, or an empty string when nothing was injected.

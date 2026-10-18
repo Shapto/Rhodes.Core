@@ -10,6 +10,17 @@
 
         private static readonly AsyncLocal<Func<Chat.ChatEvent, Task>?> emitEvent = new();
 
+        private static readonly AsyncLocal<bool> isTestRun = new();
+
+        /// <summary>
+        /// True while a behavior test runs: saves are simulated and nothing is consumed, so tests leave no trace.
+        /// </summary>
+        public static bool IsTestRun
+        {
+            get => isTestRun.Value;
+            set => isTestRun.Value = value;
+        }
+
         public static string? CurrentConversationId
         {
             get => currentConversationId.Value;

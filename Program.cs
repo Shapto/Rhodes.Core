@@ -46,9 +46,26 @@ builder.Services.AddSingleton<ICoreTool, DeleteFileTool>();
 builder.Services.AddSingleton<ICoreTool, RunCommandTool>();
 builder.Services.AddSingleton<ICoreTool, CloneRepoTool>();
 builder.Services.AddSingleton<ICoreTool, LittleHandyTool>();
+
+// Sandboxed Python for her math (see PythonSandbox for the three layers).
+builder.Services.AddSingleton(new Rhodes.Core.Sandbox.PythonSandbox(
+    builder.Configuration["Python:Path"] ?? Path.Combine(dataFolder, "python", "python.exe"),
+    Path.Combine(dataFolder, "python-sandbox")));
+builder.Services.AddSingleton<ICoreTool, RunPythonTool>();
+
+// The behavior test set: saved prompts with expected behavior, run from the workbench.
+builder.Services.AddSingleton(serviceProvider => new Rhodes.Core.Testing.BehaviorTestRunner(
+    serviceProvider.GetRequiredService<ChatLoop>(),
+    serviceProvider.GetRequiredService<ConversationManager>(),
+    serviceProvider.GetRequiredService<ApprovalService>(),
+    serviceProvider.GetRequiredService<ActivityTracker>(),
+    serviceProvider.GetRequiredService<WorkspaceFolder>(),
+    dataFolder,
+    serviceProvider.GetRequiredService<ILogger<Rhodes.Core.Testing.BehaviorTestRunner>>()));
 builder.Services.AddSingleton(serviceProvider => new WebReader(builder.Configuration["GitHub:Token"], serviceProvider.GetRequiredService<ILogger<WebReader>>()));
 
 var personaPath = builder.Configuration["Persona:Path"] ?? Path.Combine(Path.GetDirectoryName(databasePath)!, "persona.md");
+Rhodes.Core.Chat.SystemPrompt.EnsureCodeStyleFile(personaPath);
 var contextTokens = builder.Configuration.GetValue("Chat:ContextTokens", 64000);
 builder.Services.AddSingleton(new UploadStore(Path.Combine(Path.GetDirectoryName(databasePath)!, "uploads")));
 builder.Services.AddSingleton(new DocumentStore(Path.Combine(Path.GetDirectoryName(databasePath)!, "rhodes.db"), Path.Combine(Path.GetDirectoryName(databasePath)!, "documents")));
@@ -128,6 +145,36 @@ builder.Services.AddSingleton(serviceProvider => new MemoryReviewer(
 
 
 var app = builder.Build();
+
+// Every page and API call needs the access token (see AccessGate); this runs before the pages are served.
+var accessGate = new Rhodes.Core.Security.AccessGate(
+    Rhodes.Core.Security.AccessGate.LoadOrCreateToken(builder.Configuration["Security:AccessToken"], Path.GetDirectoryName(databasePath)!, app.Logger),
+    builder.Configuration.GetValue("Security:AllowLocalhost", true));
+app.Use(accessGate.InvokeAsync);
+
+app.MapPost("/auth/login", async (Rhodes.Core.Security.LoginRequest loginRequest, HttpContext httpContext) =>
+{
+    if (!accessGate.IsCorrect(loginRequest.Token?.Trim()))
+    {
+        // A pause after each wrong token makes guessing slow.
+        await Task.Delay(1000);
+        return Results.Problem("That token isn't right.", statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    httpContext.Response.Cookies.Append(Rhodes.Core.Security.AccessGate.CookieName, loginRequest.Token!.Trim(), new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Strict,
+        Expires = DateTimeOffset.Now.AddYears(1),
+        Path = "/",
+    });
+    return Results.Ok();
+});
+app.MapPost("/auth/logout", (HttpContext httpContext) =>
+{
+    httpContext.Response.Cookies.Delete(Rhodes.Core.Security.AccessGate.CookieName);
+    return Results.Ok();
+});
 
 // "no-cache" makes the browser check with the core before reusing a page file, so edits show up on the first reload.
 // Unchanged files still come back as a cheap "not modified", so nothing gets slower on the LAN.
@@ -455,5 +502,13 @@ app.MapGet("/memory/proposals", (MemoryReviewer memoryReviewer) => Results.Ok(ne
 app.MapPost("/memory/proposals/run", (MemoryReviewer memoryReviewer) => memoryReviewer.Start() ? Results.Ok() : Results.Conflict("A review is already running."));
 app.MapPost("/memory/proposals/{proposalId:long}", (long proposalId, ProposalDecision proposalDecision, MemoryReviewer memoryReviewer) =>
     Results.Ok(new { Outcome = memoryReviewer.Decide(proposalId, proposalDecision.Decision == "accept") }));
+
+app.MapGet("/tests", (Rhodes.Core.Testing.BehaviorTestRunner behaviorTestRunner) =>
+{
+    var (status, results) = behaviorTestRunner.GetResults();
+    return Results.Ok(new { Status = status, Tests = behaviorTestRunner.LoadTests(), Results = results });
+});
+app.MapPost("/tests/run", (string? id, Rhodes.Core.Testing.BehaviorTestRunner behaviorTestRunner) =>
+    behaviorTestRunner.Start(string.IsNullOrWhiteSpace(id) ? null : id) ? Results.Ok() : Results.Conflict("Tests are already running."));
 
 app.Run();

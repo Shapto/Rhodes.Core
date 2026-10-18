@@ -58,7 +58,7 @@ public sealed class ConversationCompactor
         {
             var keepFromIndex = Math.Max(FindKeepFromIndex(conversation), conversation.SummaryCoversThrough);
             var tokensPerCharacter = conversation.LastRequestCharacters > 0 ? (double)usedTokens / conversation.LastRequestCharacters : 0.3;
-            var systemPrompt = await File.ReadAllTextAsync(personaPath, cancellationToken);
+            var systemPrompt = await SystemPrompt.LoadAsync(personaPath, cancellationToken);
 
             // Stage 1: collapse old tool results. Cheap, no model call.
             ChatLoop.BuildRequestMessages(systemPrompt, conversation);

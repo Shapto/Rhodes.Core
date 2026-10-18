@@ -22,6 +22,7 @@ let loadedMemoryCount = 0;
 let memoryTotal = 0;
 let memoryRequestNumber = 0;
 let memoryStatistics = null;
+let waitingProposalCount = 0; // set by memory-review.js
 let searchDelayTimer = null;
 
 // ---------- greeting and status ----------
@@ -96,7 +97,7 @@ async function loadStatistics() {
 
     document.getElementById('statisticsTotal').textContent = memoryStatistics.total.toLocaleString();
     document.getElementById('statisticsWeek').textContent = memoryStatistics.savedThisWeek.toLocaleString();
-    document.getElementById('statisticsReview').textContent = memoryStatistics.needsReview.toLocaleString();
+    showReviewCount();
     document.getElementById('memoryTotalNote').textContent = memoryStatistics.total.toLocaleString() + ' memories';
 
     const largestTypeCount = Math.max(1, ...memoryTypes.map(memoryType => memoryStatistics.byType[memoryType] || 0));
@@ -112,6 +113,14 @@ async function loadStatistics() {
     }
     document.getElementById('typeBars').replaceChildren(barsFragment);
     renderTypeTabs();
+}
+
+// "needs review" counts her review proposals waiting for an answer plus old imported memories flagged for a type check.
+function showReviewCount() {
+    if (!memoryStatistics) return;
+    const reviewElement = document.getElementById('statisticsReview');
+    reviewElement.textContent = (waitingProposalCount + memoryStatistics.needsReview).toLocaleString();
+    reviewElement.title = waitingProposalCount + ' proposals from her review · ' + memoryStatistics.needsReview + ' imported memories to check';
 }
 
 function renderTypeTabs() {
@@ -361,4 +370,6 @@ startModelStatusPolling(showModelStatus);
 renderTypeTabs();
 loadStatistics();
 loadMemories(true);
+// The memory pass and heartbeat save memories in the background, so the numbers refresh on their own.
+setInterval(loadStatistics, 60000);
 loadChats();

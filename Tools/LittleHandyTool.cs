@@ -58,9 +58,9 @@ namespace Rhodes.Core.Tools
         public string Name => "little_handy";
 
         public string Description =>
-            "Hand a big, self-contained job to Little Handy, your helper: dig something up (in a repo, a long log, past chats), get an overview of a codebase, " +
-            "or review code in your workspace. He uses read-only tools in his own context and returns a short report, so your context stays small. " +
-            "He can't see this chat: put everything he needs in the task. One job at a time.";
+            "Hand a big, self-contained job to Little Handy, your helper. Use him instead of doing it yourself whenever a job would take you more than about 3 reads: " +
+            "a whole repo or folder, a long log or document, many past chats, or a code review. He works in his own context with read-only tools and returns a short report, " +
+            "so your context stays small. When Shapto asks for Little Handy, always use him. He can't see this chat: put every link, path, id and detail he needs in the task. One job at a time.";
 
         public JsonObject ParametersSchema => new()
         {

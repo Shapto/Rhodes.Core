@@ -91,6 +91,7 @@
                         <button type="button" class="type-tab" role="tab" data-view="chats" aria-selected="false">CHAT INTERNALS</button>
                         <button type="button" class="type-tab" role="tab" data-view="legacy" aria-selected="false">OLD CATEGORIES</button>
                         <button type="button" class="type-tab" role="tab" data-view="permissions" aria-selected="false">PERMISSIONS</button>
+                        <button type="button" class="type-tab" role="tab" data-view="behavior" aria-selected="false">BEHAVIOR</button>
                     </div>
 
                     <div class="bench-view" data-view="probe">
@@ -149,6 +150,20 @@
                             <table class="bench-table">
                                 <thead><tr><th>kind</th><th>always allowed</th><th>since</th><th></th></tr></thead>
                                 <tbody id="permissionRows"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="bench-view" data-view="behavior" hidden>
+                        <p class="bench-note mono">Saved prompts with the behavior she should show. Each runs in a throwaway chat: nothing is saved to memory, writes and commands are refused, and the chat is deleted after. Add your own in behavior-tests-extra.json in the data folder.</p>
+                        <div class="tool-run-row">
+                            <button type="button" class="send cut-small label" id="behaviorRunButton">RUN ALL</button>
+                            <span class="mono bench-meta" id="behaviorStatus"></span>
+                        </div>
+                        <div class="bench-table-wrap">
+                            <table class="bench-table">
+                                <thead><tr><th>test</th><th>result</th><th>tools</th><th>time</th><th></th></tr></thead>
+                                <tbody id="behaviorRows"></tbody>
                             </table>
                         </div>
                     </div>

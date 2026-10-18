@@ -71,7 +71,7 @@ public sealed class HeartbeatRunner
 
         try
         {
-            var systemPrompt = await File.ReadAllTextAsync(personaPath, cancellationToken);
+            var systemPrompt = await SystemPrompt.LoadAsync(personaPath, cancellationToken);
             var requestMessages = new JsonArray
             {
                 new JsonObject { ["role"] = "system", ["content"] = systemPrompt },

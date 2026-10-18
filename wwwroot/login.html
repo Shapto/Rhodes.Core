@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Log in · Rhodes</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="rhodes.css">
+    <style>
+        body {
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            margin: 0;
+            padding: 16px;
+            box-sizing: border-box;
+        }
+
+        form.login-panel {
+            position: static;
+            width: min(420px, 100%);
+            margin: 0;
+            padding: 20px 22px;
+            background: var(--panel);
+            border-top: 2px solid var(--accent);
+            gap: 12px;
+        }
+
+        .login-title {
+            font-size: 15px;
+            letter-spacing: 0.14em;
+            color: var(--text-strong);
+        }
+
+        .login-note {
+            margin: 0;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .login-input {
+            min-height: 40px;
+            padding: 6px 10px;
+            border: 1px solid var(--line);
+            background: var(--ground);
+            color: var(--text-strong);
+            font: 14px 'JetBrains Mono', monospace;
+        }
+
+        .login-error {
+            min-height: 16px;
+            font: 12px 'JetBrains Mono', monospace;
+            color: var(--danger);
+        }
+    </style>
+</head>
+<body>
+    <form class="login-panel cut" id="loginForm">
+        <div class="login-title label">RHODES · CLOSURE</div>
+        <p class="login-note">Enter the access token. It's in <code>access-token.txt</code> in the data folder, or in <code>appsettings.Local.json</code> under Security. This device stays logged in for a year.</p>
+        <input class="login-input" id="tokenInput" type="password" autocomplete="current-password" placeholder="access token" aria-label="Access token" autofocus>
+        <span class="login-error" id="loginError" role="alert"></span>
+        <button type="submit" class="send cut-small label">LOG IN</button>
+    </form>
+    <script>
+        'use strict';
+        const loginForm = document.getElementById('loginForm');
+        const loginError = document.getElementById('loginError');
+
+        // Only go back to a page on this core, never to another site.
+        function safeNextPath() {
+            const nextPath = new URLSearchParams(window.location.search).get('next') || '/';
+            return nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : '/';
+        }
+
+        loginForm.addEventListener('submit', async submitEvent => {
+            submitEvent.preventDefault();
+            loginError.textContent = '';
+            const loginButton = loginForm.querySelector('button');
+            loginButton.disabled = true;
+            try {
+                const response = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: document.getElementById('tokenInput').value }),
+                });
+                if (!response.ok) throw new Error(response.status === 401 ? "That token isn't right." : 'The core answered ' + response.status + '.');
+                window.location.href = safeNextPath();
+            } catch (loginFailure) {
+                loginError.textContent = loginFailure.message;
+            } finally {
+                loginButton.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

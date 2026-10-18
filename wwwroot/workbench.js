@@ -24,7 +24,7 @@ function showBenchView(viewName) {
     // Each view loads the first time it's opened, so the home page doesn't ask the core for everything up front.
     if (loadedBenchViews.has(viewName)) return Promise.resolve();
     loadedBenchViews.add(viewName);
-    const viewLoaders = { tools: loadTools, documents: loadDocuments, chats: loadInternalsChats, legacy: loadLegacyBreakdown, permissions: loadPermissions };
+    const viewLoaders = { tools: loadTools, documents: loadDocuments, chats: loadInternalsChats, legacy: loadLegacyBreakdown, permissions: loadPermissions, behavior: loadBehaviorTests };
     return viewLoaders[viewName] ? viewLoaders[viewName]() : Promise.resolve();
 }
 
@@ -445,6 +445,90 @@ async function loadPermissions() {
     rowsElement.replaceChildren(rowsFragment);
 }
 
+// ---------- behavior tests ----------
+
+let behaviorPollTimer = null;
+
+function formatSeconds(seconds) {
+    return seconds >= 60 ? Math.floor(seconds / 60) + 'm ' + Math.round(seconds % 60) + 's' : Math.round(seconds) + 's';
+}
+
+async function startBehaviorTests(testId) {
+    const runUrl = testId ? '/tests/run?id=' + encodeURIComponent(testId) : '/tests/run';
+    try {
+        const response = await fetch(runUrl, { method: 'POST' });
+        if (!response.ok && response.status !== 409) throw new Error(await readErrorText(response));
+    } catch (runError) {
+        await showNotice("COULDN'T START", runError.message);
+        return;
+    }
+    loadBehaviorTests();
+}
+
+function addBehaviorDetail(rowsFragment, result) {
+    const detailRow = addElement(rowsFragment, 'tr', 'behavior-detail');
+    detailRow.hidden = true;
+    const detailCell = addElement(detailRow, 'td');
+    detailCell.colSpan = 5;
+    for (const failure of result.failures) addElement(detailCell, 'div', 'behavior-failure mono', '✕ ' + failure);
+    addElement(detailCell, 'pre', 'bench-output', result.reply || '(no reply)');
+    return detailRow;
+}
+
+async function loadBehaviorTests() {
+    clearTimeout(behaviorPollTimer);
+    const rowsElement = document.getElementById('behaviorRows');
+    const statusElement = document.getElementById('behaviorStatus');
+    const runButton = document.getElementById('behaviorRunButton');
+    let testData;
+    try {
+        testData = await fetchJson('/tests');
+    } catch (loadError) {
+        rowsElement.replaceChildren();
+        addElement(addElement(rowsElement, 'tr'), 'td', 'readout-empty', "couldn't load: " + loadError.message).colSpan = 5;
+        return;
+    }
+
+    const runStatus = testData.status;
+    runButton.disabled = runStatus.running;
+    statusElement.textContent = runStatus.running
+        ? runStatus.progress
+        : runStatus.lastRunAt ? runStatus.passed + ' / ' + runStatus.total + ' passed · ' + formatAge(runStatus.lastRunAt) : 'not run yet';
+
+    const resultsById = new Map(testData.results.map(result => [result.id, result]));
+    const rowsFragment = document.createDocumentFragment();
+    for (const behaviorTest of testData.tests) {
+        const result = resultsById.get(behaviorTest.id);
+        const tableRow = addElement(rowsFragment, 'tr');
+        const titleCell = addElement(tableRow, 'td', 'behavior-title');
+        addElement(titleCell, 'div', null, behaviorTest.title);
+        addElement(titleCell, 'div', 'document-source', behaviorTest.prompt);
+        const resultCell = addElement(tableRow, 'td', 'mono');
+        if (result) {
+            addElement(resultCell, 'span', result.passed ? 'behavior-pass' : 'behavior-fail', result.passed ? 'PASS' : 'FAIL');
+        } else {
+            resultCell.textContent = '—';
+        }
+        addElement(tableRow, 'td', 'mono', result ? result.toolsCalled.join(', ') || 'none' : '');
+        addElement(tableRow, 'td', 'mono', result ? formatSeconds(result.seconds) : '');
+        const actionsCell = addElement(tableRow, 'td', 'table-actions');
+        if (result) {
+            const detailRow = addBehaviorDetail(rowsFragment, result);
+            const showButton = addElement(actionsCell, 'button', 'turn-action', 'REPLY');
+            showButton.type = 'button';
+            showButton.addEventListener('click', () => { detailRow.hidden = !detailRow.hidden; });
+        }
+        const runOneButton = addElement(actionsCell, 'button', 'turn-action', 'RUN');
+        runOneButton.type = 'button';
+        runOneButton.disabled = runStatus.running;
+        runOneButton.addEventListener('click', () => startBehaviorTests(behaviorTest.id));
+    }
+    rowsElement.replaceChildren(rowsFragment);
+
+    // While a run is going, check back every few seconds.
+    if (runStatus.running) behaviorPollTimer = setTimeout(loadBehaviorTests, 4000);
+}
+
 // ---------- wiring ----------
 
 for (const tabButton of benchTabButtons) tabButton.addEventListener('click', () => showBenchView(tabButton.dataset.view));
@@ -456,6 +540,7 @@ document.getElementById('probeForm').addEventListener('submit', submitEvent => {
 });
 
 document.getElementById('toolRunButton').addEventListener('click', runSelectedTool);
+document.getElementById('behaviorRunButton').addEventListener('click', () => startBehaviorTests(null));
 document.getElementById('toolForm').addEventListener('submit', submitEvent => {
     submitEvent.preventDefault();
     runSelectedTool();

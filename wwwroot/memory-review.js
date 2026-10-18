@@ -96,6 +96,8 @@ async function loadProposals() {
     else if (reviewStatus.lastRunAt) statusParts.push('last review ' + formatAge(reviewStatus.lastRunAt));
     if (reviewData.proposals.length > 0) statusParts.push(reviewData.proposals.length + (reviewData.proposals.length === 1 ? ' proposal waits for you' : ' proposals wait for you'));
     reviewStatusElement.textContent = statusParts.join(' · ');
+    waitingProposalCount = reviewData.proposals.length;
+    showReviewCount();
 
     const cardsFragment = document.createDocumentFragment();
     for (const proposalView of reviewData.proposals) cardsFragment.appendChild(createProposalCard(proposalView));

@@ -140,6 +140,12 @@ public sealed class ApprovalService : IDisposable
             return null;
         }
 
+        // In a behavior test, writes and commands never run, even under an "always allow" rule (Little Handy's too).
+        if (ToolContext.IsTestRun && describedRequest.Category != ApprovalCategories.Web)
+        {
+            return "Error: this is a behavior test run, so it wasn't carried out. Answer as if it had been refused.";
+        }
+
         var request = askedBy is null ? describedRequest : describedRequest with { Title = askedBy + ": " + describedRequest.Title };
 
         var decision = await RequestAsync(request, emitEvent, cancellationToken);
