@@ -647,7 +647,8 @@ function buildConversationView(conversationView) {
         }
         const isSummarized = displayMessage.index < summaryBoundary;
         if (displayMessage.role === 'user') {
-            createUserMessage(newMessagesContainer, displayMessage.text, displayMessage.attachments, displayMessage.sentAt, isSummarized);
+            const userMessage = createUserMessage(newMessagesContainer, displayMessage.text, displayMessage.attachments, displayMessage.sentAt, isSummarized);
+            addPinButton(userMessage.messageElement, conversationView.id, displayMessage.index, displayMessage.pinned);
             closureMessage = null;
             continue;
         }
@@ -662,7 +663,10 @@ function buildConversationView(conversationView) {
             // Text followed by a tool result was written before a tool call: it belongs in the trail, like it did while streaming.
             const isInterimText = nextMessage && nextMessage.role === 'tool';
             if (displayMessage.text && isInterimText) addInterimNote(closureMessage, displayMessage.text);
-            else if (displayMessage.text) createAnswer(closureMessage.bodyElement, null, displayMessage.text);
+            else if (displayMessage.text) {
+                createAnswer(closureMessage.bodyElement, null, displayMessage.text);
+                addPinButton(closureMessage.messageElement, conversationView.id, displayMessage.index, displayMessage.pinned);
+            }
             if (displayMessage.questions) {
                 const isAnswered = conversationView.messages.slice(messagePosition + 1).some(laterMessage => laterMessage.role === 'user');
                 addQuestionCard(closureMessage, displayMessage.questions, isAnswered);
@@ -951,6 +955,8 @@ async function sendMessage(messageText, attachmentsToSend, options) {
                 showSentTime(closureMessage.sentTimeElement, chatEvent.sentAt);
                 statusLine.hidden = true;
                 if (answer) renderAnswer(answer);
+                addPinButton(userMessage.messageElement, turnConversationId, chatEvent.userMessageIndex, false);
+                if (answer && answer.rawText.trim()) addPinButton(closureMessage.messageElement, turnConversationId, chatEvent.replyMessageIndex, false);
                 if (isCurrentChat) {
                     showContext(chatEvent.contextTokens, chatEvent.contextLimit, chatEvent.contextSplit);
                     showReplyStatistics(chatEvent.statistics);

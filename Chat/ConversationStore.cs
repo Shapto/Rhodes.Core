@@ -52,6 +52,7 @@ public sealed partial class ConversationStore : IDisposable
         AddColumnIfMissing("summary_covers_through", "INTEGER NOT NULL DEFAULT 0");
         AddColumnIfMissing("tool_results_collapsed_before", "INTEGER NOT NULL DEFAULT 0");
         AddColumnIfMissing("title_is_manual", "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing("memory_pass_through", "INTEGER NOT NULL DEFAULT 0");
 
         // The search index holds what Shapto and Closure said (not tool results or thinking), one row per message.
         // Chats from before the index existed are indexed once, the first time the core starts with it.
@@ -204,7 +205,7 @@ public sealed partial class ConversationStore : IDisposable
     {
         lock (databaseLock)
         {
-            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at, summary, summary_covers_through, tool_results_collapsed_before, created_at, title_is_manual FROM conversations WHERE id = $id;", ("$id", conversationId));
+            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at, summary, summary_covers_through, tool_results_collapsed_before, created_at, title_is_manual, memory_pass_through FROM conversations WHERE id = $id;", ("$id", conversationId));
             using var conversationReader = conversationCommand.ExecuteReader();
             if (!conversationReader.Read())
             {
@@ -220,6 +221,7 @@ public sealed partial class ConversationStore : IDisposable
                 ToolResultsCollapsedBefore = conversationReader.GetInt32(4),
                 CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(conversationReader.GetInt64(5)).ToLocalTime(),
                 TitleIsManual = conversationReader.GetInt64(6) != 0,
+                MemoryPassThrough = conversationReader.GetInt32(7),
             };
 
             using var messagesCommand = CreateCommand(null, "SELECT message_json FROM conversation_messages WHERE conversation_id = $id ORDER BY position;", ("$id", conversationId));
@@ -282,6 +284,30 @@ public sealed partial class ConversationStore : IDisposable
             var deletedRows = Execute(transaction, "DELETE FROM conversations WHERE id = $id;", ("$id", conversationId));
             transaction.Commit();
             return deletedRows > 0;
+        }
+    }
+
+    public void SaveMemoryPassThrough(Conversation conversation)
+    {
+        lock (databaseLock)
+        {
+            Execute(null, "UPDATE conversations SET memory_pass_through = $memoryPassThrough WHERE id = $id;",
+                ("$memoryPassThrough", conversation.MemoryPassThrough),
+                ("$id", conversation.Id));
+        }
+    }
+
+    /// <summary>
+    /// Rewrites one stored message after a Rhodes-only field changed (a pin). The model-facing content is untouched.
+    /// </summary>
+    public void SaveMessage(Conversation conversation, int position)
+    {
+        lock (databaseLock)
+        {
+            Execute(null, "UPDATE conversation_messages SET message_json = $json WHERE conversation_id = $id AND position = $position;",
+                ("$json", conversation.Messages[position].ToJsonString()),
+                ("$id", conversation.Id),
+                ("$position", position));
         }
     }
 

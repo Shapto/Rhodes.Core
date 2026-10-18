@@ -1,0 +1,74 @@
+/* Rhodes home page: Closure's memory cleanup proposals. Uses the tokens from rhodes.css and the badges from home.css. */
+
+.proposal-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.proposal-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+    .proposal-list:empty {
+        display: none;
+    }
+
+.proposal-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--panel-raised);
+    border-left: 2px solid var(--accent);
+}
+
+    .proposal-card[data-kind="delete"] {
+        border-left-color: var(--danger);
+    }
+
+    .proposal-card[data-kind="archive"] {
+        border-left-color: var(--type-archive);
+    }
+
+.proposal-kind {
+    padding: 1px 6px;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    letter-spacing: 0.08em;
+}
+
+.proposal-card[data-kind="delete"] .proposal-kind {
+    border-color: #5a3a3a;
+    color: var(--danger);
+}
+
+.proposal-reason {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.proposal-memory {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--text-body);
+}
+
+    .proposal-memory .type-badge {
+        flex: none;
+        font: 10px 'JetBrains Mono', monospace;
+    }
+
+.proposal-result {
+    color: var(--text-strong);
+}
+
+.proposal-memory-text {
+    overflow-wrap: anywhere;
+}

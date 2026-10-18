@@ -35,6 +35,11 @@ public sealed class Conversation
 
     public int ToolResultsCollapsedBefore { get; set; }
 
+    /// <summary>
+    /// Messages before this index have been through the background memory pass (or the one before compaction).
+    /// </summary>
+    public int MemoryPassThrough { get; set; }
+
     public int? LastContextTokens { get; set; }
 
     public int LastRequestCharacters { get; set; }
@@ -72,6 +77,8 @@ public enum ChatDeleteOutcome
 }
 
 public sealed record TitleRequest(string Title);
+
+public sealed record PinRequest(bool Pinned);
 
 public sealed record ToolStep(string ToolName, string Arguments, string Result);
 

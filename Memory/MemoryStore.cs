@@ -154,7 +154,7 @@ namespace Rhodes.Core.Memory
         /// Saves a new memory and returns its id. The legacy category is filled in too, so the row
         /// still makes sense to the old plugin after a rollback.
         /// </summary>
-        public string Save(string content, string type, IEnumerable<string> tags, double confidence, string source)
+        public string Save(string content, string type, IEnumerable<string> tags, double confidence, string source, string? supersedesId = null)
         {
             if (!MemoryTypes.All.Contains(type))
             {
@@ -187,7 +187,7 @@ namespace Rhodes.Core.Memory
                 INSERT INTO memories (id, content, category, tags, confidence, source, scope, project,
                                       created_at, updated_at, last_accessed_at, access_count, supersedes)
                 VALUES ($id, $content, $category, $tags, $confidence, $source, 'global', NULL,
-                        $now, $now, $now, 0, NULL);
+                        $now, $now, $now, 0, $supersedes);
                 """,
                     ("$id", memoryId),
                     ("$content", storedContent),
@@ -195,7 +195,8 @@ namespace Rhodes.Core.Memory
                     ("$tags", tagsJson),
                     ("$confidence", Math.Clamp(confidence, 0.0, 1.0)),
                     ("$source", source),
-                    ("$now", nowMilliseconds));
+                    ("$now", nowMilliseconds),
+                    ("$supersedes", supersedesId));
                 Execute(transaction, "INSERT INTO closure_memory_meta (memory_id, type, needs_review) VALUES ($id, $type, 0);",
                     ("$id", memoryId),
                     ("$type", type));
@@ -207,6 +208,52 @@ namespace Rhodes.Core.Memory
             }
 
             return memoryId;
+        }
+
+        /// <summary>
+        /// Replaces memories with a new one: the new row's supersedes column points at the first old one, and the old ones
+        /// are archived, so they stay searchable as history but are never injected again. Returns the new id.
+        /// </summary>
+        public string Supersede(IReadOnlyList<string> oldMemoryIds, string content, string type, IEnumerable<string> tags, string source)
+        {
+            var newMemoryId = Save(content, type, tags, 1.0, source, oldMemoryIds.FirstOrDefault());
+            foreach (var oldMemoryId in oldMemoryIds)
+            {
+                SetType(oldMemoryId, MemoryTypes.Archive);
+            }
+
+            return newMemoryId;
+        }
+
+        public IReadOnlyList<MemoryRecord> GetByIds(IEnumerable<string> memoryIds)
+        {
+            var wantedIds = memoryIds.Distinct().ToList();
+            if (wantedIds.Count == 0)
+            {
+                return [];
+            }
+
+            lock (databaseLock)
+            {
+                var parameterNames = wantedIds.Select((_, index) => "$id" + index).ToList();
+                using var command = CreateCommand(null,
+                    "SELECT " + MemoryColumns + " FROM memories JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id WHERE memories.id IN (" + string.Join(", ", parameterNames) + ");",
+                    wantedIds.Select((memoryId, index) => (parameterNames[index], (object?)memoryId)).ToArray());
+                return ReadAllMemories(command);
+            }
+        }
+
+        /// <summary>
+        /// Every memory that isn't archived, grouped by type and then oldest first: the input for a cleanup review.
+        /// </summary>
+        public IReadOnlyList<MemoryRecord> ListForReview()
+        {
+            lock (databaseLock)
+            {
+                using var command = CreateCommand(null,
+                    "SELECT " + MemoryColumns + " FROM memories JOIN closure_memory_meta ON closure_memory_meta.memory_id = memories.id WHERE closure_memory_meta.type <> 'archive' ORDER BY closure_memory_meta.type, memories.created_at;");
+                return ReadAllMemories(command);
+            }
         }
 
         /// <summary>

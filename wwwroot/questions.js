@@ -174,3 +174,41 @@ function addApprovalCard(closureMessage, approval, beforeElement) {
 
     return cardElement;
 }
+
+// ---------- pins ----------
+
+/**
+ * A PIN button by the name of one of Shapto's messages or one of her answers. Pinned messages are kept word for word
+ * when the chat is compacted.
+ */
+function addPinButton(messageElement, conversationId, messageIndex, isPinned) {
+    const nameLine = messageElement.querySelector('.message-body > div');
+    if (!nameLine || !conversationId || messageIndex === undefined || messageIndex === null || nameLine.querySelector('.pin-button')) return;
+    const pinButton = addElement(nameLine, 'button', 'pin-button mono');
+    pinButton.type = 'button';
+    let pinned = Boolean(isPinned);
+    function showPinState() {
+        pinButton.textContent = pinned ? 'PINNED' : 'PIN';
+        pinButton.title = pinned ? 'Kept word for word when the chat is compacted · click to unpin' : 'Keep this word for word when the chat is compacted';
+        pinButton.setAttribute('aria-pressed', String(pinned));
+        messageElement.classList.toggle('pinned', pinned);
+    }
+    showPinState();
+    pinButton.addEventListener('click', async () => {
+        pinButton.disabled = true;
+        try {
+            const response = await fetch('/chats/' + encodeURIComponent(conversationId) + '/messages/' + messageIndex + '/pin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pinned: !pinned }),
+            });
+            if (!response.ok) throw new Error(await readErrorText(response));
+            pinned = !pinned;
+            showPinState();
+        } catch (pinError) {
+            await showNotice("COULDN'T PIN", pinError.message);
+        } finally {
+            pinButton.disabled = false;
+        }
+    });
+}

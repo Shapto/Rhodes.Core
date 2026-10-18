@@ -1,6 +1,7 @@
 ﻿using System.Text;
 using System.Text.Json.Nodes;
 using System.Globalization;
+using Rhodes.Core.Memory;
 
 namespace Rhodes.Core.Chat;
 
@@ -27,9 +28,11 @@ public sealed class ConversationCompactor
     private readonly int contextTokens;
     private readonly ILogger<ConversationCompactor> logger;
     private readonly ChatTitler chatTitler;
+    private readonly MemoryExtractor memoryExtractor;
 
-    public ConversationCompactor(LmStudioClient lmStudioClient, ChatLoop chatLoop, ChatTitler chatTitler, ConversationStore conversationStore, string personaPath, int contextTokens, ILogger<ConversationCompactor> logger)
+    public ConversationCompactor(LmStudioClient lmStudioClient, ChatLoop chatLoop, ChatTitler chatTitler, MemoryExtractor memoryExtractor, ConversationStore conversationStore, string personaPath, int contextTokens, ILogger<ConversationCompactor> logger)
     {
+        this.memoryExtractor = memoryExtractor;
         this.lmStudioClient = lmStudioClient;
         this.chatLoop = chatLoop;
         this.conversationStore = conversationStore;
@@ -93,6 +96,22 @@ public sealed class ConversationCompactor
                 }
                 else
                 {
+                    // Anything worth keeping long-term is filed before the messages leave her view.
+                    if (conversation.MemoryPassThrough < keepFromIndex)
+                    {
+                        await ReportAsync(onProgress, "filing memories before summarizing");
+                        try
+                        {
+                            await memoryExtractor.ExtractAsync(conversation, conversation.MemoryPassThrough, keepFromIndex, cancellationToken);
+                            conversation.MemoryPassThrough = keepFromIndex;
+                            conversationStore.SaveMemoryPassThrough(conversation);
+                        }
+                        catch (Exception exception) when (exception is not OperationCanceledException)
+                        {
+                            logger.LogWarning(exception, "Memory pass before compacting chat {ConversationId} failed; summarizing anyway", conversation.Id);
+                        }
+                    }
+
                     await ReportAsync(onProgress, $"summarizing {foldedMessageCount} earlier messages");
                     var summaryText = await WriteSummaryAsync(conversation, keepFromIndex, cancellationToken);
                     if (string.IsNullOrWhiteSpace(summaryText))

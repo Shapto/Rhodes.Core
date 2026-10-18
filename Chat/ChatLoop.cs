@@ -381,6 +381,12 @@ public sealed partial class ChatLoop
                 .ToList();
 
             conversation.Messages.RemoveRange(lastUserIndex, conversation.Messages.Count - lastUserIndex);
+            if (conversation.MemoryPassThrough > lastUserIndex)
+            {
+                // The rerun turn gets its own memory pass.
+                conversation.MemoryPassThrough = lastUserIndex;
+                conversationStore.SaveMemoryPassThrough(conversation);
+            }
             conversation.ToolResultsCollapsedBefore = Math.Min(conversation.ToolResultsCollapsedBefore, lastUserIndex);
             conversation.LastContextTokens = null;
 
@@ -803,7 +809,7 @@ public sealed partial class ChatLoop
     /// </summary>
     internal static JsonArray BuildRequestMessages(string systemPrompt, Conversation conversation)
     {
-        var systemContent = conversation.Summary.Length == 0 ? systemPrompt : systemPrompt + "\n\n## Earlier in this conversation (summary)\n" + conversation.Summary;
+        var systemContent = conversation.Summary.Length == 0 ? systemPrompt : systemPrompt + "\n\n## Earlier in this conversation (summary)\n" + conversation.Summary + BuildPinnedBlock(conversation);
         var requestMessages = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = systemContent } };
         var totalCharacters = systemContent.Length;
         var memoryCharacters = 0;
@@ -840,6 +846,32 @@ public sealed partial class ChatLoop
         conversation.LastSystemCharacters = systemContent.Length;
         conversation.LastMemoryCharacters = memoryCharacters;
         return requestMessages;
+    }
+
+    /// <summary>
+    /// Messages Shapto pinned that compaction has folded into the summary, kept word for word right after it.
+    /// It only changes when a pin changes or compaction runs, so the prompt stays cacheable.
+    /// </summary>
+    private static string BuildPinnedBlock(Conversation conversation)
+    {
+        var builder = new StringBuilder();
+        for (var index = 0; index < conversation.SummaryCoversThrough && index < conversation.Messages.Count; index++)
+        {
+            var message = conversation.Messages[index];
+            if (message["rhodes_pinned"] is not JsonValue pinnedValue || !pinnedValue.TryGetValue<bool>(out var isPinned) || !isPinned)
+            {
+                continue;
+            }
+
+            var isUser = GetString(message["role"]) == "user";
+            var text = isUser ? GetString(message["rhodes_display_text"]) : GetString(message["content"]);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                builder.Append("\n- ").Append(isUser ? "Shapto" : "You").Append(": ").Append(text.Trim());
+            }
+        }
+
+        return builder.Length == 0 ? "" : "\n\n## Pinned messages (kept word for word)" + builder;
     }
 
     /// <summary>

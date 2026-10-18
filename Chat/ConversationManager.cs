@@ -2,7 +2,7 @@
 
 namespace Rhodes.Core.Chat;
 
-public sealed record DisplayMessage(int Index, string Role, string Text, string? Reasoning, string? ToolName, JsonNode? Attachments, string? SentAt, JsonNode? Statistics, JsonNode? Questions);
+public sealed record DisplayMessage(int Index, string Role, string Text, string? Reasoning, string? ToolName, JsonNode? Attachments, string? SentAt, JsonNode? Statistics, JsonNode? Questions, bool Pinned);
 public sealed record ConversationView(string Id, string Title, string Summary, int SummaryCoversThrough, int? ContextTokens, int ContextLimit, ContextSplit? ContextSplit, IReadOnlyList<DisplayMessage> Messages);
 
 /// <summary>
@@ -103,10 +103,42 @@ public sealed class ConversationManager
                 message["rhodes_attachments"]?.DeepClone(),
                 GetString(message["rhodes_sent_at"]),
                 message["rhodes_statistics"]?.DeepClone(),
-                message["rhodes_questions"]?.DeepClone()))
+                message["rhodes_questions"]?.DeepClone(),
+                message["rhodes_pinned"] is JsonValue pinnedValue && pinnedValue.TryGetValue<bool>(out var isPinned) && isPinned))
             .Where(displayMessage => displayMessage.Text.Length > 0 || displayMessage.Reasoning is not null || displayMessage.Attachments is JsonArray { Count: > 0 } || displayMessage.Questions is not null)
             .ToList();
         return new ConversationView(conversation.Id, conversation.Title, conversation.Summary, conversation.SummaryCoversThrough, conversation.LastContextTokens, contextLimit, EstimateContextSplit(conversation), displayMessages);
+    }
+
+    /// <summary>
+    /// Pins or unpins one of Shapto's messages or one of her answers. Pinned messages survive compaction word for word.
+    /// Returns false when the index isn't a pinnable message, or a turn is running in the chat.
+    /// </summary>
+    public bool SetPinned(Conversation conversation, int messageIndex, bool pinned)
+    {
+        if (messageIndex < 0 || messageIndex >= conversation.Messages.Count || GetString(conversation.Messages[messageIndex]["role"]) is not ("user" or "assistant") || !conversation.TurnLock.Wait(0))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (pinned)
+            {
+                conversation.Messages[messageIndex]["rhodes_pinned"] = true;
+            }
+            else
+            {
+                conversation.Messages[messageIndex].Remove("rhodes_pinned");
+            }
+
+            conversationStore.SaveMessage(conversation, messageIndex);
+            return true;
+        }
+        finally
+        {
+            conversation.TurnLock.Release();
+        }
     }
 
     private static string? GetString(JsonNode? node)

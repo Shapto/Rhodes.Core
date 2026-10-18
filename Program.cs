@@ -107,10 +107,23 @@ builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
     serviceProvider.GetRequiredService<LmStudioClient>(),
     serviceProvider.GetRequiredService<ChatLoop>(),
     serviceProvider.GetRequiredService<ChatTitler>(),
+    serviceProvider.GetRequiredService<MemoryExtractor>(),
     conversationStore,
     personaPath,
     contextTokens,
     serviceProvider.GetRequiredService<ILogger<ConversationCompactor>>()));
+
+// Memory upkeep: filing durable facts after a chat goes quiet (and before compaction), and Closure's cleanup proposals.
+builder.Services.AddSingleton<MemoryExtractor>();
+builder.Services.AddHostedService<MemoryPassService>();
+builder.Services.AddSingleton(serviceProvider => new MemoryReviewer(
+    Path.Combine(Path.GetDirectoryName(databasePath)!, "rhodes.db"),
+    serviceProvider.GetRequiredService<MemoryStore>(),
+    serviceProvider.GetRequiredService<LmStudioClient>(),
+    serviceProvider.GetRequiredService<ActivityTracker>(),
+    serviceProvider.GetRequiredService<ModelStatusMonitor>(),
+    serviceProvider.GetRequiredService<HeartbeatRunner>(),
+    serviceProvider.GetRequiredService<ILogger<MemoryReviewer>>()));
 
 
 
@@ -222,8 +235,9 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
             await SendAsync(new { type = "compacted", text = conversation.Title, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation) });
         }
 
+        var userMessageIndex = conversation.Messages.Count;
         var turnResult = await chatLoop.RunTurnAsync(conversation, messageText, attachmentIds, chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
-        await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s", contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation), statistics = turnResult.Statistics, sentAt = DateTimeOffset.Now });
+        await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s", userMessageIndex, replyMessageIndex = conversation.Messages.Count - 1, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation), statistics = turnResult.Statistics, sentAt = DateTimeOffset.Now });
 
         var newTitle = await chatTitler.TitleNewChatAsync(conversation, CancellationToken.None);
         if (newTitle is not null)
@@ -301,6 +315,17 @@ app.MapPost("/chats/{conversationId}/title", (string conversationId, TitleReques
     conversation.TitleIsManual = true;
     conversationStore.SaveTitle(conversation);
     return Results.Ok(new { conversation.Title });
+});
+
+app.MapPost("/chats/{conversationId}/messages/{messageIndex:int}/pin", (string conversationId, int messageIndex, PinRequest pinRequest, ConversationManager conversationManager) =>
+{
+    var conversation = conversationManager.Get(conversationId);
+    if (conversation is null)
+    {
+        return Results.NotFound();
+    }
+
+    return conversationManager.SetPinned(conversation, messageIndex, pinRequest.Pinned) ? Results.Ok() : Results.Conflict("That message can't be pinned right now (wait until her reply is finished).");
 });
 
 app.MapGet("/chats/{conversationId}/compaction", (string conversationId, ConversationManager conversationManager) =>
@@ -425,5 +450,10 @@ app.MapDelete("/approvals/rules/{ruleId:long}", (long ruleId, ApprovalService ap
 app.MapGet("/brief", (HeartbeatStore heartbeatStore) => heartbeatStore.ListActiveBriefCards());
 app.MapPost("/brief/{cardId:long}", (long cardId, BriefCardUpdate briefCardUpdate, HeartbeatStore heartbeatStore) =>
     !BriefCardStatuses.SetByShapto.Contains(briefCardUpdate.Status) ? Results.BadRequest("Status must be useful, not_useful, saved or dismissed.") : heartbeatStore.SetBriefCardStatus(cardId, briefCardUpdate.Status) ? Results.Ok() : Results.NotFound());
+
+app.MapGet("/memory/proposals", (MemoryReviewer memoryReviewer) => Results.Ok(new { Status = memoryReviewer.GetStatus(), Proposals = memoryReviewer.ListOpenWithMemories() }));
+app.MapPost("/memory/proposals/run", (MemoryReviewer memoryReviewer) => memoryReviewer.Start() ? Results.Ok() : Results.Conflict("A review is already running."));
+app.MapPost("/memory/proposals/{proposalId:long}", (long proposalId, ProposalDecision proposalDecision, MemoryReviewer memoryReviewer) =>
+    Results.Ok(new { Outcome = memoryReviewer.Decide(proposalId, proposalDecision.Decision == "accept") }));
 
 app.Run();

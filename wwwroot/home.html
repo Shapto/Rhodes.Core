@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="home.css">
     <link rel="stylesheet" href="workbench.css">
     <link rel="stylesheet" href="heartbeat.css">
+    <link rel="stylesheet" href="memory-review.css">
 </head>
 <body>
     <div class="home">
@@ -212,6 +213,11 @@
                 <span id="memoryHeading">MEMORY</span>
                 <span class="panel-heading-note mono" id="memoryTotalNote"></span>
             </div>
+            <div class="proposal-bar">
+                <button type="button" class="turn-action" id="reviewButton" title="She reads her memories in batches and proposes merges, archives, retypes and deletes for you to accept or reject">ASK CLOSURE TO REVIEW</button>
+                <span class="mono bench-meta" id="reviewStatus"></span>
+            </div>
+            <div class="proposal-list" id="proposalList"></div>
             <div class="type-tabs" id="typeTabs" role="tablist" aria-label="Memory types"></div>
             <div class="memory-toolbar">
                 <input type="search" class="memory-search" id="memorySearch" placeholder="search memories and tags" aria-label="Search memories">
@@ -230,5 +236,6 @@
     <script src="home.js"></script>
     <script src="workbench.js"></script>
     <script src="heartbeat.js"></script>
+    <script src="memory-review.js"></script>
 </body>
 </html>

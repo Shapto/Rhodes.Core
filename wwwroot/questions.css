@@ -218,3 +218,39 @@
 .approval-card.answered .approval-buttons {
     display: none;
 }
+
+/* ---------- pins ---------- */
+
+.pin-button {
+    margin-left: 8px;
+    border: 0;
+    background: none;
+    padding: 0 2px;
+    color: var(--text-faint);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+    .message:hover .pin-button,
+    .pin-button:focus-visible,
+    .pin-button[aria-pressed="true"] {
+        opacity: 1;
+    }
+
+    .pin-button[aria-pressed="true"] {
+        color: var(--accent);
+    }
+
+@media (hover: none) {
+    .pin-button {
+        opacity: 1;
+    }
+}
+
+.message.pinned .message-body {
+    box-shadow: inset 2px 0 0 var(--accent-dim);
+    padding-left: 8px;
+}
