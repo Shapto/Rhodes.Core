@@ -13,14 +13,25 @@ using Rhodes.Core.Heartbeat;
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true);
 
-var databasePath = builder.Configuration["Memory:DatabasePath"];
-if (string.IsNullOrWhiteSpace(databasePath))
+// Everything lives in one RhodesIsland folder, so the core finds its Data folder by walking up from wherever it runs
+// (RhodesIsland\Core when published, RhodesIsland\Rhodes.Core\bin\… when run from source). Settings and keys in
+// Data\appsettings.Local.json win over the ones next to the core, so publishing a new build never loses them.
+var rhodesDataFolder = builder.Configuration["Rhodes:DataFolder"] ?? FindDataFolder(AppContext.BaseDirectory) ?? FindDataFolder(builder.Environment.ContentRootPath);
+if (rhodesDataFolder is not null)
 {
-    throw new InvalidOperationException("Set Memory:DatabasePath in appsettings.Local.json.");
+    builder.Configuration.AddJsonFile(Path.Combine(rhodesDataFolder, "appsettings.Local.json"), optional: true);
+}
+
+var configuredDatabasePath = builder.Configuration["Memory:DatabasePath"];
+var databasePath = !string.IsNullOrWhiteSpace(configuredDatabasePath) && File.Exists(configuredDatabasePath) ? configuredDatabasePath : rhodesDataFolder is null ? null : Path.Combine(rhodesDataFolder, "memory.db");
+if (databasePath is null || !File.Exists(databasePath))
+{
+    throw new InvalidOperationException($"Couldn't find memory.db. Put the core inside the RhodesIsland folder next to Data, or set Memory:DatabasePath (it was \"{configuredDatabasePath}\").");
 }
 
 var memoryStore = new MemoryStore(databasePath);
-memoryStore.CreateBackup(builder.Configuration["Memory:BackupFolder"]!, builder.Configuration.GetValue("Memory:BackupCopiesToKeep", 7));
+var memoryBackupFolder = builder.Configuration["Memory:BackupFolder"];
+memoryStore.CreateBackup(string.IsNullOrWhiteSpace(memoryBackupFolder) ? Path.Combine(Path.GetDirectoryName(databasePath)!, "backups") : memoryBackupFolder, builder.Configuration.GetValue("Memory:BackupCopiesToKeep", 7));
 builder.Services.AddSingleton(memoryStore);
 var decayHalfLifeDays = builder.Configuration.GetValue("Memory:DecayHalfLifeDays", 30.0);
 builder.Services.AddSingleton(new MemoryRanker(memoryStore, decayHalfLifeDays));
@@ -145,6 +156,7 @@ builder.Services.AddSingleton(serviceProvider => new MemoryReviewer(
 
 
 var app = builder.Build();
+app.Logger.LogInformation("Data folder: {DataFolder}", dataFolder);
 
 // Every page and API call needs the access token (see AccessGate); this runs before the pages are served.
 var accessGate = new Rhodes.Core.Security.AccessGate(
@@ -512,3 +524,20 @@ app.MapPost("/tests/run", (string? id, Rhodes.Core.Testing.BehaviorTestRunner be
     behaviorTestRunner.Start(string.IsNullOrWhiteSpace(id) ? null : id) ? Results.Ok() : Results.Conflict("Tests are already running."));
 
 app.Run();
+
+/// <summary>
+/// The first folder named Data with a memory.db in it, looking next to the starting folder and then next to each parent.
+/// </summary>
+static string? FindDataFolder(string startFolder)
+{
+    for (var folder = new DirectoryInfo(startFolder); folder is not null; folder = folder.Parent)
+    {
+        var candidateFolder = Path.Combine(folder.FullName, "Data");
+        if (File.Exists(Path.Combine(candidateFolder, "memory.db")))
+        {
+            return candidateFolder;
+        }
+    }
+
+    return null;
+}
