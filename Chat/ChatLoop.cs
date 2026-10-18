@@ -31,6 +31,8 @@ public sealed partial class ChatLoop
     private const int MaximumReportedJournalEntries = 3;
     private const int MaximumReportedJournalCharacters = 600;
     private const int AnnouncementTailCharacters = 250;
+    private const int MaximumSentArgumentCharacters = 1500;
+    private const double FirstStepContextLimit = 0.92;
     private const string OutOfToolsNote = "[Rhodes: you've used all your tool calls for this message. Answer now with what you found, and say plainly what you didn't get to, so Shapto can tell you to continue.]";
     private const string ContextFullNote = "[Rhodes: the chat's context is nearly full, so no more tool calls this message. Answer now with what you found, and say plainly what you didn't get to; the chat gets compacted after your answer and Shapto can tell you to continue.]";
     private const string UnfinishedActionNudge = "[Rhodes: your reply ends by saying you'll do something, but you didn't call a tool. If you meant to, call it now. If not, just answer without promising it.]";
@@ -94,7 +96,10 @@ public sealed partial class ChatLoop
             };
             await EmitAsync(onEvent, new ChatEvent("thinkingLevel", thinkingLevel.ToString().ToLowerInvariant()));
 
-            var injectedMemories = FindMemoriesToInject(messageText);
+            // A memory already injected earlier in the visible part of this chat isn't sent again; it's still in front of her.
+            var injectedMemories = FindMemoriesToInject(messageText)
+                .Where(memoryLine => !WasInjectedEarlier(conversation, memoryLine))
+                .ToList();
             if (injectedMemories.Count > 0)
             {
                 await EmitAsync(onEvent, new ChatEvent("memories", JsonSerializer.Serialize(injectedMemories)));
@@ -132,8 +137,9 @@ public sealed partial class ChatLoop
             var announcedReasoning = "";
             var nudgeUsed = false;
             var currentNudge = UnfinishedActionNudge;
-            var previousRequestCharacters = 0;
-            int? previousPromptTokens = null;
+            // The last turn's size seeds the estimate, so even this turn's first request is checked before it goes out.
+            var previousRequestCharacters = conversation.LastContextTokens is null ? 0 : conversation.LastRequestCharacters;
+            int? previousPromptTokens = conversation.LastContextTokens;
 
             for (var stepNumber = 0; stepNumber <= MaximumToolSteps; stepNumber++)
             {
@@ -142,6 +148,11 @@ public sealed partial class ChatLoop
                 // The request about to go out, in tokens: its size in characters at the previous call's tokens-per-character.
                 var estimatedRequestTokens = previousRequestCharacters > 0 && previousPromptTokens is { } knownPromptTokens ? (double)conversation.LastRequestCharacters * knownPromptTokens / previousRequestCharacters : 0;
                 var contextNearlyFull = estimatedRequestTokens > contextTokens * ToolRunContextLimit;
+                if (estimatedRequestTokens > contextTokens * FirstStepContextLimit)
+                {
+                    throw new InvalidOperationException($"This chat is too full to continue (about {estimatedRequestTokens / 1000:0}K of {contextTokens / 1000}K tokens) and compaction couldn't shrink it enough. Start a new chat; search_chats can still find this one.");
+                }
+
                 var offerTools = stepNumber < MaximumToolSteps && !contextNearlyFull;
                 var requestCharacters = conversation.LastRequestCharacters;
                 var stepThinkingLevel = thinkingLevel;
@@ -280,12 +291,13 @@ public sealed partial class ChatLoop
 
                 // "Let me look that up." with no tool call: one nudge per turn to either do it or answer properly.
                 // An empty answer after tool calls means she lost the thread mid-task; same one nudge.
-                var stoppedSilently = answer.Trim().Length == 0 && toolSteps.Count > 0;
+                var stoppedSilently = (answer.Trim().Length == 0 && toolSteps.Count > 0) || LeakedToolCallPattern().IsMatch(answer);
                 if (offerTools && !nudgeUsed && (stoppedSilently || LooksLikeUnfinishedAction(answer)))
                 {
                     nudgeUsed = true;
                     currentNudge = stoppedSilently ? EmptyAnswerNudge : UnfinishedActionNudge;
-                    announcedAction = answer;
+                    // A tool call typed out as text isn't kept: it's noise, not something she said.
+                    announcedAction = LeakedToolCallPattern().IsMatch(answer) ? "" : answer;
                     announcedReasoning = reasoning;
                     logger.LogInformation("Chat {ConversationId}: reply announced an action without a tool call; nudging once", conversation.Id);
                     if (!stoppedSilently)
@@ -515,6 +527,12 @@ public sealed partial class ChatLoop
         return string.IsNullOrWhiteSpace(firstPart) ? secondPart : string.IsNullOrWhiteSpace(secondPart) ? firstPart : firstPart + "\n\n" + secondPart;
     }
 
+    /// <summary>
+    /// A tool call written out as text instead of called: Qwen's own call markup, or a bare JSON call.
+    /// </summary>
+    [GeneratedRegex(@"<tool_call>|</tool_call>|<function=|\{\s*""name""\s*:\s*""[a-z_]+""\s*,\s*""arguments""")]
+    private static partial Regex LeakedToolCallPattern();
+
     [GeneratedRegex(@"\b(?:let me|let's|i'll|i will|i'm going to|going to|time to)\s+(?:\w+\s+){0,3}?(?:check|look|search|fetch|pull|read|open|find|grab|dig|verify|fix|research|browse|try|go through|investigate)\b", RegexOptions.IgnoreCase)]
     private static partial Regex UnfinishedActionPattern();
 
@@ -622,7 +640,23 @@ public sealed partial class ChatLoop
             .Where(rankedMemory => !rankedMemory.Memory.Content.Contains("think>", StringComparison.OrdinalIgnoreCase))
             .Where(rankedMemory => rankedMemory.Similarity >= AutoInjectMinimumSimilarity && CountSharedWords(messageWords, rankedMemory.Memory) >= requiredSharedWords)
             .Select(rankedMemory => $"{rankedMemory.Memory.Type}: {rankedMemory.Memory.Content}")
+            .Distinct()
             .ToList();
+    }
+
+    private static bool WasInjectedEarlier(Conversation conversation, string memoryLine)
+    {
+        var injectedLine = "- " + memoryLine;
+        for (var index = conversation.SummaryCoversThrough; index < conversation.Messages.Count; index++)
+        {
+            var message = conversation.Messages[index];
+            if (GetString(message["role"]) == "user" && (GetString(message["content"])?.Contains(injectedLine, StringComparison.Ordinal) ?? false))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static int CountSharedWords(IReadOnlyList<string> messageWords, MemoryRecord memory)
@@ -788,6 +822,11 @@ public sealed partial class ChatLoop
                 requestMessage.Remove(privateKey);
             }
 
+            if (requestMessage["tool_calls"] is JsonArray requestToolCalls)
+            {
+                ShortenBigArguments(requestToolCalls);
+            }
+
             if (index < conversation.ToolResultsCollapsedBefore && GetString(requestMessage["role"]) == "tool")
             {
                 requestMessage["content"] = $"[Earlier {toolName ?? "tool"} result, collapsed to save space. Call the tool again if you need it.]";
@@ -801,6 +840,46 @@ public sealed partial class ChatLoop
         conversation.LastSystemCharacters = systemContent.Length;
         conversation.LastMemoryCharacters = memoryCharacters;
         return requestMessages;
+    }
+
+    /// <summary>
+    /// A call that wrote a whole file carries the file in its arguments, which would stay in her context for good.
+    /// Once the call has run, the file holds that text, so long string arguments are cut to a short note.
+    /// Every call in the history has already run by the time a request is built.
+    /// </summary>
+    private static void ShortenBigArguments(JsonArray toolCalls)
+    {
+        foreach (var toolCall in toolCalls)
+        {
+            var functionNode = toolCall?["function"] as JsonObject;
+            if (GetString(functionNode?["arguments"]) is not { Length: > MaximumSentArgumentCharacters } argumentsText)
+            {
+                continue;
+            }
+
+            try
+            {
+                if (JsonNode.Parse(argumentsText) is not JsonObject argumentsObject)
+                {
+                    continue;
+                }
+
+                foreach (var (argumentName, argumentValue) in argumentsObject.ToList())
+                {
+                    if (GetString(argumentValue) is { Length: > MaximumSentArgumentCharacters } longText)
+                    {
+                        var lineCount = longText.Split('\n').Length;
+                        argumentsObject[argumentName] = $"[{longText.Length:N0} characters, {lineCount} lines; left out here to save space. read_file shows the file as it is now.]";
+                    }
+                }
+
+                functionNode!["arguments"] = argumentsObject.ToJsonString();
+            }
+            catch (JsonException)
+            {
+                // Arguments that aren't valid JSON stay as they are.
+            }
+        }
     }
 
     private static JsonArray BuildToolDefinitions(IEnumerable<ICoreTool> coreTools)

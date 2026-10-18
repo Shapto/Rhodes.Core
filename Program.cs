@@ -216,6 +216,12 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
             attachmentIds = removedTurn.AttachmentIds;
         }
 
+        // Compaction normally runs after a reply; this catches a chat that grew past the limit in a turn that failed.
+        if (await conversationCompactor.CompactIfNeededAsync(conversation, statusText => SendAsync(new { type = "status", text = statusText }), cancellationToken))
+        {
+            await SendAsync(new { type = "compacted", text = conversation.Title, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation) });
+        }
+
         var turnResult = await chatLoop.RunTurnAsync(conversation, messageText, attachmentIds, chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
         await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s", contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation), statistics = turnResult.Statistics, sentAt = DateTimeOffset.Now });
 

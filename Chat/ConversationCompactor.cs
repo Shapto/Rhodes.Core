@@ -53,13 +53,7 @@ public sealed class ConversationCompactor
         await conversation.TurnLock.WaitAsync(cancellationToken);
         try
         {
-            var keepFromIndex = FindKeepFromIndex(conversation);
-            if (keepFromIndex <= conversation.SummaryCoversThrough)
-            {
-                logger.LogWarning("Chat {ConversationId} is at {UsedTokens} tokens, but its recent turns alone are that large; nothing older to compact", conversation.Id, usedTokens);
-                return false;
-            }
-
+            var keepFromIndex = Math.Max(FindKeepFromIndex(conversation), conversation.SummaryCoversThrough);
             var tokensPerCharacter = conversation.LastRequestCharacters > 0 ? (double)usedTokens / conversation.LastRequestCharacters : 0.3;
             var systemPrompt = await File.ReadAllTextAsync(personaPath, cancellationToken);
 
@@ -70,6 +64,18 @@ public sealed class ConversationCompactor
             ChatLoop.BuildRequestMessages(systemPrompt, conversation);
             var collapsedAnything = conversation.LastRequestCharacters < charactersBeforeCollapse;
             var estimatedTokens = (int)(conversation.LastRequestCharacters * tokensPerCharacter);
+
+            // Stage 1b: when the recent turns themselves are the bulk (big file reads, long pages), collapse their tool
+            // results too, all but the latest turn's. Without this a few heavy turns could fill the context with nothing to compact.
+            var latestTurnStart = conversation.Messages.FindLastIndex(message => GetString(message["role"]) == "user");
+            if (estimatedTokens > contextTokens * TargetFraction && latestTurnStart > conversation.ToolResultsCollapsedBefore)
+            {
+                conversation.ToolResultsCollapsedBefore = latestTurnStart;
+                ChatLoop.BuildRequestMessages(systemPrompt, conversation);
+                collapsedAnything = conversation.LastRequestCharacters < charactersBeforeCollapse;
+                estimatedTokens = (int)(conversation.LastRequestCharacters * tokensPerCharacter);
+            }
+
             if (collapsedAnything)
             {
                 logger.LogInformation("Chat {ConversationId}: collapsed old tool results, {UsedTokens} -> about {EstimatedTokens} tokens", conversation.Id, usedTokens, estimatedTokens);
@@ -77,7 +83,7 @@ public sealed class ConversationCompactor
 
             // Stage 2: summarize, but only when enough would be folded in to be worth a model call and a cache rebuild.
             var summarized = false;
-            if (estimatedTokens > contextTokens * TargetFraction)
+            if (estimatedTokens > contextTokens * TargetFraction && keepFromIndex > conversation.SummaryCoversThrough)
             {
                 var foldedMessageCount = keepFromIndex - conversation.SummaryCoversThrough;
                 var foldedTokens = (int)(MeasureCharacters(conversation, conversation.SummaryCoversThrough, keepFromIndex) * tokensPerCharacter);
