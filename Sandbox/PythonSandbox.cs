@@ -185,6 +185,7 @@ blocked_prefixes = (
     "smtplib.", "poplib.", "imaplib.", "nntplib.", "telnetlib.", "msvcrt.", "ctypes.call_function", "ctypes.dlsym",
     "sys.remote_exec", "pty.", "resource.setrlimit",
 )
+allowed_system_libraries = {"kernel32", "ntdll"}
 path_events_write = {"os.remove", "os.rename", "os.rmdir", "os.mkdir", "os.chmod", "os.chown", "os.truncate", "os.link", "os.symlink", "os.utime", "shutil.copyfile", "shutil.copytree", "shutil.move", "shutil.rmtree", "shutil.make_archive", "shutil.unpack_archive"}
 path_events_read = {"os.listdir", "os.scandir", "os.chdir", "glob.glob", "glob.glob/2"}
 
@@ -219,8 +220,12 @@ def audit(event, args):
         if args and isinstance(args[0], (str, bytes, os.PathLike)) and not inside(args[0], read_roots):
             deny(event + " outside the run folder")
     elif event == "ctypes.dlopen":
+        # Importing ctypes on Windows loads kernel32 by name (numpy imports ctypes). Loading these two system
+        # libraries by bare name is allowed; calling into them still needs ctypes.dlsym, which stays blocked.
         name = args[0] if args else None
-        if name not in (None, "", b""):
+        if isinstance(name, bytes):
+            name = name.decode("utf-8", "replace")
+        if name not in (None, "") and name.lower().removesuffix(".dll") not in allowed_system_libraries:
             deny("loading native code")
     elif event.startswith(blocked_prefixes):
         deny(event)
