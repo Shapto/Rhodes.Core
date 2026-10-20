@@ -56,7 +56,7 @@ public sealed partial class ChatLoop
 
     private const string ReviewInstruction =
         "Before this goes to Shapto, check your answer above against the tool results in this turn. " +
-        "Check every number, percentage, name, path and version against the actual output, and redo any arithmetic yourself. " +
+        "First list every number, percentage, name, path and version in your answer, including ones you worked out yourself (like space remaining), and next to each write the tool output it comes from; redo any arithmetic. " +
         "Check that nothing contradicts the output (e.g. a count or spec that disagrees with what a tool printed), " +
         "that anything you say ran, passed or was changed actually shows that in the results, " +
         "and that facts you added from your own knowledge are marked as unverified if no tool confirmed them. " +
@@ -94,8 +94,17 @@ public sealed partial class ChatLoop
 
         requestMessages.Add(new JsonObject { ["role"] = "assistant", ["content"] = draftAnswer });
         requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = ReviewInstruction });
-
-        var responseMessage = await lmStudioClient.StreamCompletionAsync(requestMessages, null, ThinkingLevel.Light, (_, _) => Task.FromResult(true), cancellationToken);
+        var reviewCharacters = 0;
+        var responseMessage = await lmStudioClient.StreamCompletionAsync(requestMessages, null, ThinkingLevel.Full, (_, deltaText) =>
+        {
+            reviewCharacters += deltaText.Length;
+            return Task.FromResult(reviewCharacters <= maximumThinkingCharacters);
+        }, cancellationToken);
+        if (reviewCharacters > maximumThinkingCharacters)
+        {
+            logger.LogInformation("Chat {ConversationId}: answer check ran out of thinking room; keeping the original answer", conversation.Id);
+            return null;
+        }
         var (_, reviewText) = ThinkingSplitter.Split(GetString(responseMessage["content"]), GetString(responseMessage["reasoning_content"]));
         reviewText = reviewText.Trim();
 
