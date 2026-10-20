@@ -52,6 +52,18 @@ public sealed partial class ChatLoop
     private readonly HeartbeatStore heartbeatStore;
     private readonly ApprovalService approvalService;
 
+    private const string ReviewApprovedMarker = "ANSWER_OK";
+
+    private const string ReviewInstruction =
+        "Before this goes to Shapto, check your answer above against the tool results in this turn. " +
+        "Check every number, percentage, name, path and version against the actual output, and redo any arithmetic yourself. " +
+        "Check that nothing contradicts the output (e.g. a count or spec that disagrees with what a tool printed), " +
+        "that anything you say ran, passed or was changed actually shows that in the results, " +
+        "and that facts you added from your own knowledge are marked as unverified if no tool confirmed them. " +
+        "If it's all correct, reply with exactly " + ReviewApprovedMarker + " and nothing else, even if you'd phrase things differently. " +
+        "If something is wrong, reply with only the corrected full answer, written to Shapto as your answer, without mentioning this check.";
+
+
     public ChatLoop(LmStudioClient lmStudioClient, MemoryRanker memoryRanker, ConversationStore conversationStore, UploadStore uploadStore, DocumentStore documentStore, HeartbeatStore heartbeatStore, ApprovalService approvalService, IEnumerable<ICoreTool> tools, string personaPath, int maximumThinkingCharacters, int contextTokens, ILogger<ChatLoop> logger)
     {
         this.heartbeatStore = heartbeatStore;
@@ -67,6 +79,30 @@ public sealed partial class ChatLoop
         toolDefinitions = BuildToolDefinitions(this.tools);
         this.maximumThinkingCharacters = maximumThinkingCharacters;
         this.conversationStore = conversationStore;
+    }
+
+    /// <summary>
+    /// Asks her to check her finished answer against this turn's tool results.
+    /// Returns the corrected answer, or null when the answer stands.
+    /// </summary>
+    private async Task<string?> ReviewAnswerAsync(string systemPrompt, Conversation conversation, int currentTurnStartIndex, string draftAnswer, CancellationToken cancellationToken)
+    {
+        // BuildRequestMessages records the request size for compaction estimates; this extra request shouldn't count.
+        var savedRequestCharacters = conversation.LastRequestCharacters;
+        var requestMessages = BuildRequestMessages(systemPrompt, conversation, currentTurnStartIndex);
+        conversation.LastRequestCharacters = savedRequestCharacters;
+
+        requestMessages.Add(new JsonObject { ["role"] = "assistant", ["content"] = draftAnswer });
+        requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = ReviewInstruction });
+
+        var responseMessage = await lmStudioClient.StreamCompletionAsync(requestMessages, null, ThinkingLevel.Light, (_, _) => Task.FromResult(true), cancellationToken);
+        var (_, reviewText) = ThinkingSplitter.Split(GetString(responseMessage["content"]), GetString(responseMessage["reasoning_content"]));
+        reviewText = reviewText.Trim();
+
+        var answerStands = reviewText.Length == 0 || reviewText.StartsWith(ReviewApprovedMarker, StringComparison.Ordinal);
+        if (answerStands) logger.LogInformation("Chat {ConversationId}: answer check passed", conversation.Id);
+        else logger.LogInformation("Chat {ConversationId}: answer check corrected the answer", conversation.Id);
+        return answerStands ? null : reviewText;
     }
 
     public async Task<TurnResult> RunTurnAsync(Conversation conversation, string userText, IReadOnlyList<string> attachmentIds, string clientName, string thinkingSetting, Func<ChatEvent, Task>? onEvent, CancellationToken cancellationToken)
@@ -315,8 +351,26 @@ public sealed partial class ChatLoop
                     continue;
                 }
 
-                return FinishTurn(JoinParts(announcedAction, answer), JoinParts(announcedReasoning, reasoning), null);
+                var finalAnswer = JoinParts(announcedAction, answer);
+                var finalReasoning = JoinParts(announcedReasoning, reasoning);
+                if (toolSteps.Count > 0 && thinkingLevel != ThinkingLevel.Off && finalAnswer.Trim().Length > 0)
+                {
+                    await EmitAsync(onEvent, new ChatEvent("status", "checking her answer…"));
+                    var correctedAnswer = await ReviewAnswerAsync(systemPrompt, conversation, currentTurnStartIndex, finalAnswer, cancellationToken);
+                    if (correctedAnswer is not null)
+                    {
+                        // The draft moves into the trail, so Shapto can still see what changed.
+                        await EmitAsync(onEvent, new ChatEvent("moveToReasoning", ""));
+                        await EmitAsync(onEvent, new ChatEvent("content", correctedAnswer));
+                        finalReasoning = JoinParts(finalReasoning, "Draft before checking:\n" + finalAnswer);
+                        finalAnswer = correctedAnswer;
+                    }
+                }
+
+                return FinishTurn(finalAnswer, finalReasoning, null);
             }
+
+
 
             throw new InvalidOperationException("The tool loop ended without an answer.");
 
