@@ -35,7 +35,7 @@ namespace Rhodes.Core.Tools
             ["properties"] = new JsonObject
             {
                 ["command"] = new JsonObject { ["type"] = "string", ["description"] = "The command line, e.g. \"dotnet build -v q\"." },
-                ["folder"] = new JsonObject { ["type"] = "string", ["description"] = "Workspace folder to run it in, e.g. \"Gungnir\". Leave out for the workspace itself." },
+                ["folder"] = new JsonObject { ["type"] = "string", ["description"] = "Folder relative to the workspace root, exactly as list_files shows it, e.g. \"roman-test\" or \"Gungnir\". Never a full path or one starting with Data\\workspace. Leave out for the workspace root itself." },
                 ["timeout_seconds"] = new JsonObject { ["type"] = "integer", ["minimum"] = 10, ["maximum"] = MaximumTimeoutSeconds, ["description"] = "Stop it after this long. Default 180." },
             },
             ["required"] = new JsonArray("command"),

@@ -31,7 +31,7 @@ namespace Rhodes.Core.Tools
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["path"] = new JsonObject { ["type"] = "string", ["description"] = "Where, e.g. \"Gungnir/Source/Recall.cs\". Folders are created as needed." },
+                ["path"] = new JsonObject { ["type"] = "string", ["description"] = "Relative to the workspace root, exactly as list_files shows it, e.g. \"Gungnir/Source/Recall.cs\". Never a full path or one starting with Data\\workspace. Folders are created as needed." },
                 ["content"] = new JsonObject { ["type"] = "string", ["description"] = "The whole file." },
             },
             ["required"] = new JsonArray("path", "content"),
@@ -108,7 +108,7 @@ namespace Rhodes.Core.Tools
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["path"] = new JsonObject { ["type"] = "string", ["description"] = "The file to change." },
+                ["path"] = new JsonObject { ["type"] = "string", ["description"] = "The file to change, relative to the workspace root exactly as list_files shows it, e.g. \"roman-test/roman.py\". Never a full path or one starting with Data\\workspace." },
                 ["old_text"] = new JsonObject { ["type"] = "string", ["description"] = "The exact text to replace; include a line or two around it so it's unique." },
                 ["new_text"] = new JsonObject { ["type"] = "string", ["description"] = "What goes there instead. Empty to delete old_text." },
             },
@@ -119,7 +119,7 @@ namespace Rhodes.Core.Tools
         {
             try
             {
-                var (filePath, oldText, newFileText) = PrepareEdit(arguments);
+                var (filePath, oldText, newFileText, _, _) = PrepareEdit(arguments);
                 var projectKey = workspaceFolder.ProjectKey(filePath);
                 return new ApprovalRequest(ApprovalCategories.Write, "Edit " + workspaceFolder.ToRelative(filePath), TextDiff.Describe(oldText, newFileText), projectKey, "writes in " + projectKey);
             }
@@ -132,16 +132,36 @@ namespace Rhodes.Core.Tools
 
         public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken)
         {
-            var (filePath, _, newFileText) = PrepareEdit(arguments);
+            var (filePath, _, newFileText, changeStartIndex, newTextLength) = PrepareEdit(arguments);
             await File.WriteAllTextAsync(filePath, newFileText, new UTF8Encoding(false), cancellationToken);
-            return $"Edited {workspaceFolder.ToRelative(filePath)}.";
+            return $"Edited {workspaceFolder.ToRelative(filePath)}. The changed part now reads:\n" + DescribeChangedLines(newFileText, changeStartIndex, newTextLength);
+        }
+
+        /// <summary>
+        /// The changed lines plus a few around them, numbered, so she can see her edit landed where she meant it to.
+        /// </summary>
+        private static string DescribeChangedLines(string fileText, int changeStartIndex, int newTextLength)
+        {
+            const int ContextLines = 3;
+            var lines = fileText.Replace("\r\n", "\n").Split('\n');
+            var firstChangedLine = fileText[..changeStartIndex].Count(character => character == '\n');
+            var lastChangedLine = firstChangedLine + fileText.Substring(changeStartIndex, newTextLength).Count(character => character == '\n');
+            var firstShownLine = Math.Max(0, firstChangedLine - ContextLines);
+            var lastShownLine = Math.Min(lines.Length - 1, lastChangedLine + ContextLines);
+
+            var builder = new StringBuilder();
+            for (var lineIndex = firstShownLine; lineIndex <= lastShownLine; lineIndex++)
+            {
+                builder.Append(lineIndex + 1).Append('\t').AppendLine(lines[lineIndex]);
+            }
+            return builder.ToString();
         }
 
         /// <summary>
         /// The file, its current text and its text after the edit. Line endings are matched to the file's own,
         /// so a Windows file keeps its \r\n even when she writes \n.
         /// </summary>
-        private (string FilePath, string OldFileText, string NewFileText) PrepareEdit(JsonElement arguments)
+        private (string FilePath, string OldFileText, string NewFileText, int ChangeStartIndex, int NewTextLength) PrepareEdit(JsonElement arguments)
         {
             var filePath = workspaceFolder.Resolve(ToolArguments.GetRequiredString(arguments, "path"));
             if (!File.Exists(filePath))
@@ -171,7 +191,7 @@ namespace Rhodes.Core.Tools
                 throw new ToolArgumentException("old_text appears more than once. Include a line or two around it so it's unique.");
             }
 
-            return (filePath, fileText, fileText[..firstIndex] + newText + fileText[(firstIndex + oldText.Length)..]);
+            return (filePath, fileText, fileText[..firstIndex] + newText + fileText[(firstIndex + oldText.Length)..], firstIndex, newText.Length);
         }
     }
 
@@ -196,7 +216,7 @@ namespace Rhodes.Core.Tools
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
-                ["path"] = new JsonObject { ["type"] = "string", ["description"] = "The file or folder to delete." },
+                ["path"] = new JsonObject { ["type"] = "string", ["description"] = "The file or folder to delete, relative to the workspace root exactly as list_files shows it, e.g. \"roman-test/roman.py\". Never a full path or one starting with Data\\workspace." },
             },
             ["required"] = new JsonArray("path"),
         };
