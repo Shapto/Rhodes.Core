@@ -26,6 +26,7 @@ namespace Rhodes.Core.Tools
 
         public string Description =>
             "Run a command in a folder of your workspace, e.g. \"dotnet build\" or \"dotnet test\", and get its output and exit code. " +
+            "Runs in cmd.exe on Windows 11: use Windows commands (dir, type, findstr, del), not Linux ones (ls, cat, grep, rm). " +
             "Shapto approves each command. Only for building, testing and inspecting your workspace projects; nothing outside it.";
 
         public JsonObject ParametersSchema => new()

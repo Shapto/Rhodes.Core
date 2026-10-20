@@ -123,6 +123,8 @@ public sealed partial class ChatLoop
                 ["rhodes_sent_at"] = now.ToString("o", CultureInfo.InvariantCulture),
                 ["rhodes_memory_characters"] = memoryBlock.Length,
             });
+            // Everything from here on is this turn: sent to the model in full, with her reasoning, never shortened.
+            var currentTurnStartIndex = conversation.Messages.Count - 1;
 
             var systemPrompt = await SystemPrompt.LoadAsync(personaPath, cancellationToken);
             var toolSteps = new List<ToolStep>();
@@ -143,7 +145,7 @@ public sealed partial class ChatLoop
 
             for (var stepNumber = 0; stepNumber <= MaximumToolSteps; stepNumber++)
             {
-                var requestMessages = BuildRequestMessages(systemPrompt, conversation);
+                var requestMessages = BuildRequestMessages(systemPrompt, conversation, currentTurnStartIndex);
 
                 // The request about to go out, in tokens: its size in characters at the previous call's tokens-per-character.
                 var estimatedRequestTokens = previousRequestCharacters > 0 && previousPromptTokens is { } knownPromptTokens ? (double)conversation.LastRequestCharacters * knownPromptTokens / previousRequestCharacters : 0;
@@ -263,7 +265,12 @@ public sealed partial class ChatLoop
                     foreach (var toolCall in toolCalls)
                     {
                         await EmitAsync(onEvent, new ChatEvent("status", $"running {GetString(toolCall!["function"]?["name"])}…"));
-                        var toolStep = completedToolCalls.Add(BuildToolCallKey(toolCall!)) ? await RunToolCallAsync(toolCall!, cancellationToken) : BuildRepeatedCallStep(toolCall!);
+                        var isNewCall = completedToolCalls.Add(BuildToolCallKey(toolCall!));
+                        var toolStep = isNewCall ? await RunToolCallAsync(toolCall!, cancellationToken) : BuildRepeatedCallStep(toolCall!);
+
+                        // A real change to the workspace makes earlier builds and runs worth repeating.
+                        var changedWorkspace = isNewCall && toolStep.ToolName is "write_file" or "edit_file" or "delete_file" && !toolStep.Result.StartsWith("Error", StringComparison.Ordinal);
+                        if (changedWorkspace) completedToolCalls.Clear();
                         toolSteps.Add(toolStep);
                         await EmitAsync(onEvent, new ChatEvent("tool", toolStep.Arguments, toolStep.ToolName, toolStep.Result));
                         conversation.Messages.Add(new JsonObject
@@ -832,7 +839,7 @@ public sealed partial class ChatLoop
     /// What the model sees: the system prompt (plus the running summary, if any), then the messages after the summary,
     /// with old tool results collapsed and Rhodes-only fields removed. Records the size for compaction estimates.
     /// </summary>
-    internal static JsonArray BuildRequestMessages(string systemPrompt, Conversation conversation)
+    internal static JsonArray BuildRequestMessages(string systemPrompt, Conversation conversation, int currentTurnStartIndex = int.MaxValue)
     {
         var systemContent = conversation.Summary.Length == 0 ? systemPrompt : systemPrompt + "\n\n## Earlier in this conversation (summary)\n" + conversation.Summary + BuildPinnedBlock(conversation);
         var requestMessages = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = systemContent } };
@@ -848,15 +855,19 @@ public sealed partial class ChatLoop
                 .Select(property => property.Key)
                 .Where(key => key.StartsWith("rhodes_", StringComparison.Ordinal))
                 .ToList();
+            var isCurrentTurn = index >= currentTurnStartIndex;
+            var reasoningText = GetString(requestMessage["rhodes_reasoning"]);
             foreach (var privateKey in privateKeys)
             {
                 requestMessage.Remove(privateKey);
             }
 
-            if (requestMessage["tool_calls"] is JsonArray requestToolCalls)
+            if (requestMessage["tool_calls"] is JsonArray requestToolCalls && !isCurrentTurn)
             {
                 ShortenBigArguments(requestToolCalls);
             }
+
+            if (isCurrentTurn && !string.IsNullOrEmpty(reasoningText)) requestMessage["reasoning_content"] = reasoningText;
 
             if (index < conversation.ToolResultsCollapsedBefore && GetString(requestMessage["role"]) == "tool")
             {
