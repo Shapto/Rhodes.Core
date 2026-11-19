@@ -20,6 +20,10 @@ namespace Rhodes.Core.Chat;
 public sealed partial class ChatLoop
 {
     private const int MaximumToolSteps = 20;
+    private const int MaximumCodeToolSteps = 40;
+
+    // Room for CodeThinkingBudget (8000 tokens is about 32,000 characters) plus the budget message.
+    private const int CodeThinkingCharacterLimit = 36000;
 
     // Compaction only runs between turns, so a long tool run is cut short here before it can overflow the context mid-turn.
     private const double ToolRunContextLimit = 0.75;
@@ -37,6 +41,10 @@ public sealed partial class ChatLoop
     private const string ContextFullNote = "[Rhodes: the chat's context is nearly full, so no more tool calls this message. Answer now with what you found, and say plainly what you didn't get to; the chat gets compacted after your answer and Shapto can tell you to continue.]";
     private const string UnfinishedActionNudge = "[Rhodes: your reply ends by saying you'll do something, but you didn't call a tool. If you meant to, call it now. If not, just answer without promising it.]";
     private const string EmptyAnswerNudge = "[Rhodes: you stopped without answering. Carry on with what you were doing (call the next tool), or tell Shapto what you found and what's still open.]";
+    private const string UnverifiedCodeNudge = "[Rhodes: you changed code this turn but haven't built or run it since your last change. Build or test it now with run_command and fix what fails. If it can't be run here, say plainly in your answer that it's untested.]";
+
+    private static readonly HashSet<string> CodingToolNames = ["edit_file", "write_file", "run_command"];
+    private static readonly HashSet<string> BuildableExtensions = new(StringComparer.OrdinalIgnoreCase) { ".cs", ".csproj", ".py", ".js", ".ts", ".java" };
 
     private readonly LmStudioClient lmStudioClient;
     private readonly MemoryRanker memoryRanker;
@@ -183,12 +191,13 @@ public sealed partial class ChatLoop
             string? announcedAction = null;
             var announcedReasoning = "";
             var nudgeUsed = false;
+            var verifyNudgeUsed = false;
             var currentNudge = UnfinishedActionNudge;
             // The last turn's size seeds the estimate, so even this turn's first request is checked before it goes out.
             var previousRequestCharacters = conversation.LastContextTokens is null ? 0 : conversation.LastRequestCharacters;
             int? previousPromptTokens = conversation.LastContextTokens;
 
-            for (var stepNumber = 0; stepNumber <= MaximumToolSteps; stepNumber++)
+            for (var stepNumber = 0; stepNumber <= GetToolStepLimit(thinkingLevel); stepNumber++)
             {
                 var requestMessages = BuildRequestMessages(systemPrompt, conversation, currentTurnStartIndex);
 
@@ -200,7 +209,7 @@ public sealed partial class ChatLoop
                     throw new InvalidOperationException($"This chat is too full to continue (about {estimatedRequestTokens / 1000:0}K of {contextTokens / 1000}K tokens) and compaction couldn't shrink it enough. Start a new chat; search_chats can still find this one.");
                 }
 
-                var offerTools = stepNumber < MaximumToolSteps && !contextNearlyFull;
+                var offerTools = stepNumber < GetToolStepLimit(thinkingLevel) && !contextNearlyFull;
                 var requestCharacters = conversation.LastRequestCharacters;
                 var stepThinkingLevel = thinkingLevel;
                 if (announcedAction is not null)
@@ -218,6 +227,7 @@ public sealed partial class ChatLoop
                     requestMessages.Add(new JsonObject { ["role"] = "user", ["content"] = contextNearlyFull ? ContextFullNote : OutOfToolsNote });
                 }
                 var thinkingFilter = new StreamingThinkingFilter();
+                var stepThinkingCharacterLimit = stepThinkingLevel == ThinkingLevel.Code ? Math.Max(maximumThinkingCharacters, CodeThinkingCharacterLimit) : maximumThinkingCharacters;
                 var thinkingCharacters = 0;
                 var separateReasoningSeen = false;
                 var thinkingLimitHit = false;
@@ -252,7 +262,7 @@ public sealed partial class ChatLoop
                             }
                         }
 
-                        if (thinkingCharacters > maximumThinkingCharacters)
+                        if (thinkingCharacters > stepThinkingCharacterLimit)
                         {
                             thinkingLimitHit = true;
                             return false;
@@ -318,6 +328,13 @@ public sealed partial class ChatLoop
                         if (changedWorkspace) completedToolCalls.Clear();
                         toolSteps.Add(toolStep);
                         await EmitAsync(onEvent, new ChatEvent("tool", toolStep.Arguments, toolStep.ToolName, toolStep.Result));
+                        
+                        // Once she's editing or building in the workspace, the rest of the turn is coding: precise sampling, more room to think.
+                        if (thinkingLevel is ThinkingLevel.Light or ThinkingLevel.Full && CodingToolNames.Contains(toolStep.ToolName))
+                        {
+                            thinkingLevel = ThinkingLevel.Code;
+                            await EmitAsync(onEvent, new ChatEvent("thinkingLevel", "code"));
+                        }
                         conversation.Messages.Add(new JsonObject
                         {
                             ["role"] = "tool",
@@ -357,6 +374,18 @@ public sealed partial class ChatLoop
                         await EmitAsync(onEvent, new ChatEvent("content", "\n\n"));
                     }
 
+                    continue;
+                }
+                
+                // Code changed but nothing was built or run since: one nudge per turn to check it before calling it done.
+                if (offerTools && !verifyNudgeUsed && thinkingLevel != ThinkingLevel.Off && HasUnverifiedCodeChange(toolSteps))
+                {
+                    verifyNudgeUsed = true;
+                    currentNudge = UnverifiedCodeNudge;
+                    announcedAction = answer;
+                    announcedReasoning = reasoning;
+                    logger.LogInformation("Chat {ConversationId}: code changed without a build or run since; nudging once", conversation.Id);
+                    await EmitAsync(onEvent, new ChatEvent("content", "\n\n"));
                     continue;
                 }
 
@@ -622,6 +651,11 @@ public sealed partial class ChatLoop
         {
             return (trimmedText["/quick".Length..].Trim(), ThinkingLevel.Off);
         }
+        
+        if (trimmedText.StartsWith("/code", StringComparison.OrdinalIgnoreCase))
+        {
+            return (trimmedText["/code".Length..].Trim(), ThinkingLevel.Code);
+        }
 
         if (trimmedText.StartsWith("/think", StringComparison.OrdinalIgnoreCase))
         {
@@ -630,7 +664,47 @@ public sealed partial class ChatLoop
 
         return (userText, null);
     }
+    
+    private static int GetToolStepLimit(ThinkingLevel thinkingLevel)
+    {
+        return thinkingLevel == ThinkingLevel.Code ? MaximumCodeToolSteps : MaximumToolSteps;
+    }
 
+    /// <summary>
+    /// True when this turn changed a code file and no run_command came after the last such change.
+    /// </summary>
+    private static bool HasUnverifiedCodeChange(IReadOnlyList<ToolStep> turnToolSteps)
+    {
+        var lastCodeChangeIndex = -1;
+        for (var stepIndex = 0; stepIndex < turnToolSteps.Count; stepIndex++)
+        {
+            var toolStep = turnToolSteps[stepIndex];
+            var changedCodeFile = toolStep.ToolName is "write_file" or "edit_file" && !toolStep.Result.StartsWith("Error", StringComparison.Ordinal) && BuildableExtensions.Contains(Path.GetExtension(ReadPathArgument(toolStep.Arguments)));
+            if (changedCodeFile)
+            {
+                lastCodeChangeIndex = stepIndex;
+            }
+        }
+
+        return lastCodeChangeIndex >= 0 && !turnToolSteps.Skip(lastCodeChangeIndex + 1).Any(toolStep => toolStep.ToolName == "run_command");
+    }
+
+    /// <summary>
+    /// The "path" argument of a file tool call, or an empty string if there isn't one.
+    /// </summary>
+    private static string ReadPathArgument(string argumentsText)
+    {
+        try
+        {
+            using var argumentsDocument = JsonDocument.Parse(argumentsText);
+            return argumentsDocument.RootElement.TryGetProperty("path", out var pathElement) && pathElement.ValueKind == JsonValueKind.String ? pathElement.GetString()! : "";
+        }
+        catch (JsonException)
+        {
+            return "";
+        }
+    }
+    
     private static Task EmitAsync(Func<ChatEvent, Task>? onEvent, ChatEvent chatEvent)
     {
         return onEvent is null ? Task.CompletedTask : onEvent(chatEvent);

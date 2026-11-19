@@ -133,7 +133,7 @@ namespace Rhodes.Core.Tools
                     stepMessages.Add(new JsonObject { ["role"] = "user", ["content"] = "No more tool calls. Write your report now from what you found, and list what you didn't get to." });
                 }
 
-                var responseMessage = await lmStudioClient.StreamCompletionAsync(stepMessages, offerTools ? (JsonArray)toolDefinitions.DeepClone() : null, ThinkingLevel.Light, (_, _) => Task.FromResult(true), cancellationToken);
+                var responseMessage = await lmStudioClient.StreamCompletionAsync(stepMessages, offerTools ? (JsonArray)toolDefinitions.DeepClone() : null, mode == "review" ? ThinkingLevel.Code : ThinkingLevel.Light, (_, _) => Task.FromResult(true), cancellationToken);
                 previousRequestCharacters = requestCharacters;
                 previousPromptTokens = GetInteger(responseMessage["rhodes_prompt_tokens"]) ?? previousPromptTokens;
                 var (_, answer) = ThinkingSplitter.Split(GetString(responseMessage["content"]), GetString(responseMessage["reasoning_content"]));

@@ -22,6 +22,7 @@ public sealed class LmStudioClient
 
     private const int LightThinkingBudget = 1000;
     private const int FullThinkingBudget = 4000;
+    private const int CodeThinkingBudget = 8000;
     private const string ThinkingBudgetMessage = "\n\nOkay, I've thought about this enough. Time to answer.";
 
     /// <summary>
@@ -34,6 +35,20 @@ public sealed class LmStudioClient
         ["top_k"] = 20,
         ["min_p"] = 0.0,
         ["presence_penalty"] = 1.5,
+        ["repeat_penalty"] = 1.0,
+    };
+    
+    /// <summary>
+    /// Qwen3.6's recommended sampling for thinking mode on precise coding tasks.
+    /// No presence penalty: code repeats the same names on purpose, and a penalty pushes her to rename things and drift.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, double> CodeSampling = new Dictionary<string, double>
+    {
+        ["temperature"] = 0.6,
+        ["top_p"] = 0.95,
+        ["top_k"] = 20,
+        ["min_p"] = 0.0,
+        ["presence_penalty"] = 0.0,
         ["repeat_penalty"] = 1.0,
     };
 
@@ -63,7 +78,7 @@ public sealed class LmStudioClient
         httpClient = new HttpClient(handler)
         {
             BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
-            Timeout = TimeSpan.FromMinutes(10),
+            Timeout = TimeSpan.FromMinutes(30),
         };
         if (!string.IsNullOrWhiteSpace(apiKey))
         {
@@ -92,7 +107,12 @@ public sealed class LmStudioClient
         {
             requestBody["tools"] = toolDefinitions;
         }
-        var sampling = thinkingLevel == ThinkingLevel.Off ? InstantSampling : ThinkingSampling;
+        var sampling = thinkingLevel switch
+        {
+            ThinkingLevel.Off => InstantSampling,
+            ThinkingLevel.Code => CodeSampling,
+            _ => ThinkingSampling,
+        };
         foreach (var (settingName, settingValue) in sampling)
         {
             requestBody[settingName] = settingValue;
@@ -104,7 +124,12 @@ public sealed class LmStudioClient
         }
         else
         {
-            requestBody["reasoning_budget_tokens"] = thinkingLevel == ThinkingLevel.Light ? LightThinkingBudget : FullThinkingBudget;
+            requestBody["reasoning_budget_tokens"] = thinkingLevel switch
+            {
+                ThinkingLevel.Light => LightThinkingBudget,
+                ThinkingLevel.Code => CodeThinkingBudget,
+                _ => FullThinkingBudget,
+            };
             requestBody["reasoning_budget_message"] = ThinkingBudgetMessage;
         }
         var stopwatch = Stopwatch.StartNew();

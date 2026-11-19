@@ -8,6 +8,7 @@ public enum ThinkingLevel
     Off,
     Light,
     Full,
+    Code,
 }
 
 /// <summary>
@@ -36,7 +37,12 @@ public static class ThinkingClassifier
     public static ThinkingLevel Classify(string messageText)
     {
         var trimmedText = messageText.Trim();
-        if (CodeLikePattern.IsMatch(trimmedText) || MemoryStore.GetSearchWords(trimmedText).Count > LongMessageWordCount)
+        if (CodeLikePattern.IsMatch(trimmedText))
+        {
+            return ThinkingLevel.Code;
+        }
+
+        if (MemoryStore.GetSearchWords(trimmedText).Count > LongMessageWordCount)
         {
             return ThinkingLevel.Full;
         }

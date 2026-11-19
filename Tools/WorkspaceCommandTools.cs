@@ -24,9 +24,12 @@ namespace Rhodes.Core.Tools
 
         public string Name => "run_command";
 
+        private const string WindowsShellNote = "Runs in cmd.exe on Windows: use Windows commands (dir, type, findstr, del), not Linux ones (ls, cat, grep, rm). ";
+        private const string LinuxShellNote = "Runs in /bin/sh on Fedora Linux: use Linux commands (ls, cat, grep, rm), not Windows ones (dir, type, findstr, del). ";
+
         public string Description =>
             "Run a command in a folder of your workspace, e.g. \"dotnet build\" or \"dotnet test\", and get its output and exit code. " +
-            "Runs in cmd.exe on Windows 11: use Windows commands (dir, type, findstr, del), not Linux ones (ls, cat, grep, rm). " +
+            (OperatingSystem.IsWindows() ? WindowsShellNote : LinuxShellNote) +
             "Shapto approves each command. Only for building, testing and inspecting your workspace projects; nothing outside it.";
 
         public JsonObject ParametersSchema => new()
