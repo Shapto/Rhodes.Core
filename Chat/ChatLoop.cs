@@ -331,7 +331,7 @@ public sealed partial class ChatLoop
                         await EmitAsync(onEvent, new ChatEvent("tool", toolStep.Arguments, toolStep.ToolName, toolStep.Result));
                         
                         // Once she's editing or building in the workspace, the rest of the turn is coding: precise sampling, more room to think.
-                        if (thinkingLevel is ThinkingLevel.Light or ThinkingLevel.Full && CodingToolNames.Contains(toolStep.ToolName))
+                        if (thinkingLevel is ThinkingLevel.Light or ThinkingLevel.Full && CodingToolNames.Contains(toolStep.ToolName) && !toolStep.Result.StartsWith("Error", StringComparison.Ordinal))
                         {
                             thinkingLevel = ThinkingLevel.Code;
                             await EmitAsync(onEvent, new ChatEvent("thinkingLevel", "code"));

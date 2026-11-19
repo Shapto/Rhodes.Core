@@ -33,11 +33,18 @@ public static class ThinkingClassifier
     private static readonly Regex CodeLikePattern = new(
     @"`|[{};]|=>|\w+\.\w+\(|(?-i:\b[A-Z]\w+\.[A-Z]\w+)|[A-Za-z]:\\|\w+/\w+\.\w+|\bv?\d+\.\d+(\.\d+)?\b|exception|error|crash|stack ?trace",
     RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    
+    /// <summary>
+    /// Plain-words coding requests ("write a C# method", "refactor the patch") that have no code characters in them.
+    /// </summary>
+    private static readonly Regex CodingRequestPattern = new(
+        @"(?<![\w#+])(c#|c\+\+|python|javascript|typescript|java|lua|xaml|xml|json|sql|regex|code|method|function|class|script|snippet|compile|refactor|bug|harmony|patch)(?![\w#+])",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static ThinkingLevel Classify(string messageText)
     {
         var trimmedText = messageText.Trim();
-        if (CodeLikePattern.IsMatch(trimmedText))
+        if (CodeLikePattern.IsMatch(trimmedText) || CodingRequestPattern.IsMatch(trimmedText))
         {
             return ThinkingLevel.Code;
         }

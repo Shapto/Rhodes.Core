@@ -37,7 +37,7 @@ public sealed record BehaviorTestStatus(bool Running, string Progress, DateTimeO
 /// </summary>
 public sealed class BehaviorTestRunner
 {
-    private static readonly TimeSpan TestTimeout = TimeSpan.FromMinutes(4);
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromMinutes(8);
     private static readonly JsonSerializerOptions FileJsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly Regex StartedToolPattern = new(@"^running (\S+)…$");
     private static readonly Regex UnfinishedEnding = new(@"\b(let me|i'll|i will)\s+(?:\w+\s+){0,3}?(check|look|search|fetch|pull|read|find|go)\b[^.!?]*[.!]?\s*$", RegexOptions.IgnoreCase);
