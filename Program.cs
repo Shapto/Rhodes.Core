@@ -14,7 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true);
 
 // Everything lives in one RhodesIsland folder, so the core finds its Data folder by walking up from wherever it runs
-// (RhodesIsland\Core when published, RhodesIsland\Rhodes.Core\bin\… when run from source). Settings and keys in
+// (RhodesIsland\Core when published, RhodesIsland\Rhodes.Core\bin\ï¿½ when run from source). Settings and keys in
 // Data\appsettings.Local.json win over the ones next to the core, so publishing a new build never loses them.
 var rhodesDataFolder = builder.Configuration["Rhodes:DataFolder"] ?? FindDataFolder(AppContext.BaseDirectory) ?? FindDataFolder(builder.Environment.ContentRootPath);
 if (rhodesDataFolder is not null)
@@ -59,8 +59,10 @@ builder.Services.AddSingleton<ICoreTool, CloneRepoTool>();
 builder.Services.AddSingleton<ICoreTool, LittleHandyTool>();
 
 // Sandboxed Python for her math (see PythonSandbox for the three layers).
+// On Linux, Data/python/python is the wrapper from Setup-Rhodes.sh that runs Python with no network.
+string pythonFileName = OperatingSystem.IsWindows() ? "python.exe" : "python";
 builder.Services.AddSingleton(new Rhodes.Core.Sandbox.PythonSandbox(
-    builder.Configuration["Python:Path"] ?? Path.Combine(dataFolder, "python", "python.exe"),
+    builder.Configuration["Python:Path"] ?? Path.Combine(dataFolder, "python", pythonFileName),
     Path.Combine(dataFolder, "python-sandbox")));
 builder.Services.AddSingleton<ICoreTool, RunPythonTool>();
 
