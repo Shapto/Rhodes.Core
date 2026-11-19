@@ -145,6 +145,7 @@ public sealed partial class ChatLoop
             {
                 "on" => ThinkingLevel.Full,
                 "off" => ThinkingLevel.Off,
+                "code" => ThinkingLevel.Code,
                 _ => hasReadableAttachment ? ThinkingLevel.Full : ThinkingClassifier.Classify(messageText),
             };
             await EmitAsync(onEvent, new ChatEvent("thinkingLevel", thinkingLevel.ToString().ToLowerInvariant()));
