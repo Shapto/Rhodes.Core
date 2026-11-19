@@ -1033,8 +1033,10 @@ async function sendMessage(messageText, attachmentsToSend, options) {
         if (turnConversationId === currentConversationId) hideCompaction();
     }
 
-    // A failed regenerate may have removed the old turn on the core already; show what the core really has.
-    if (regenerate && turnFailed && turnConversationId === currentConversationId) {
+    // A regenerate that failed or was stopped gets its old turn put back by the core; show what the core really has.
+    // After a stop, wait a moment so the core has finished putting it back before the chat is reloaded.
+    if (regenerate && (turnFailed || !answerFinished) && turnConversationId === currentConversationId) {
+        if (!turnFailed) await new Promise(resolve => setTimeout(resolve, 1000));
         await loadConversation(currentConversationId);
         return;
     }

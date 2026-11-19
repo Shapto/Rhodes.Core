@@ -41,7 +41,7 @@ public sealed partial class ChatLoop
     private const string ContextFullNote = "[Rhodes: the chat's context is nearly full, so no more tool calls this message. Answer now with what you found, and say plainly what you didn't get to; the chat gets compacted after your answer and Shapto can tell you to continue.]";
     private const string UnfinishedActionNudge = "[Rhodes: your reply ends by saying you'll do something, but you didn't call a tool. If you meant to, call it now. If not, just answer without promising it.]";
     private const string EmptyAnswerNudge = "[Rhodes: you stopped without answering. Carry on with what you were doing (call the next tool), or tell Shapto what you found and what's still open.]";
-    private const string UnverifiedCodeNudge = "[Rhodes: you changed code this turn but haven't built or run it since your last change. Build or test it now with run_command and fix what fails. If it can't be run here, say plainly in your answer that it's untested.]";
+    private const string UnverifiedCodeNudge = "[Rhodes: you changed code this turn but haven't built or run it since your last change. Build or test it now with run_command, check every behavior Shapto asked for (error cases included), and fix what fails. If it can't be run here, say plainly in your answer that it's untested.]";
 
     private static readonly HashSet<string> CodingToolNames = ["edit_file", "write_file", "run_command"];
     private static readonly HashSet<string> BuildableExtensions = new(StringComparer.OrdinalIgnoreCase) { ".cs", ".csproj", ".py", ".js", ".ts", ".java" };
@@ -117,8 +117,25 @@ public sealed partial class ChatLoop
         reviewText = reviewText.Trim();
 
         var answerStands = reviewText.Length == 0 || reviewText.StartsWith(ReviewApprovedMarker, StringComparison.Ordinal);
-        if (answerStands) logger.LogInformation("Chat {ConversationId}: answer check passed", conversation.Id);
-        else logger.LogInformation("Chat {ConversationId}: answer check corrected the answer", conversation.Id);
+
+        // The check has no tools. A tool call or command typed out as text, or something far shorter than the draft,
+        // is the check failing, not a better answer.
+        var correctionLooksBroken = !answerStands && (LeakedToolCallPattern().IsMatch(reviewText) || reviewText.Length < draftAnswer.Length / 2);
+        if (correctionLooksBroken)
+        {
+            logger.LogInformation("Chat {ConversationId}: answer check returned something unusable; keeping the original answer", conversation.Id);
+            return null;
+        }
+
+        if (answerStands)
+        {
+            logger.LogInformation("Chat {ConversationId}: answer check passed", conversation.Id);
+        }
+        else
+        {
+            logger.LogInformation("Chat {ConversationId}: answer check corrected the answer", conversation.Id);
+        }
+
         return answerStands ? null : reviewText;
     }
 
@@ -151,9 +168,14 @@ public sealed partial class ChatLoop
             await EmitAsync(onEvent, new ChatEvent("thinkingLevel", thinkingLevel.ToString().ToLowerInvariant()));
 
             // A memory already injected earlier in the visible part of this chat isn't sent again; it's still in front of her.
-            var injectedMemories = FindMemoriesToInject(messageText)
-                .Where(memoryLine => !WasInjectedEarlier(conversation, memoryLine))
-                .ToList();
+            // Coding turns get none: matches there are almost always noise, and search_memory is still there when one is needed.
+            List<string> injectedMemories = [];
+            if (thinkingLevel != ThinkingLevel.Code)
+            {
+                injectedMemories = FindMemoriesToInject(messageText)
+                    .Where(memoryLine => !WasInjectedEarlier(conversation, memoryLine))
+                    .ToList();
+            }
             if (injectedMemories.Count > 0)
             {
                 await EmitAsync(onEvent, new ChatEvent("memories", JsonSerializer.Serialize(injectedMemories)));
@@ -480,6 +502,13 @@ public sealed partial class ChatLoop
                 .OfType<string>()
                 .ToList();
 
+            var removedMessages = conversation.Messages
+                .Skip(lastUserIndex)
+                .Select(message => (JsonObject)message.DeepClone())
+                .ToList();
+            var lastUserMessageAtBefore = conversation.LastUserMessageAt;
+            var memoryPassThroughBefore = conversation.MemoryPassThrough;
+
             conversation.Messages.RemoveRange(lastUserIndex, conversation.Messages.Count - lastUserIndex);
             if (conversation.MemoryPassThrough > lastUserIndex)
             {
@@ -503,7 +532,40 @@ public sealed partial class ChatLoop
             }
 
             conversationStore.DeleteMessagesFrom(conversation, lastUserIndex);
-            return new RemovedTurn(messageText, attachmentIds);
+            return new RemovedTurn(messageText, attachmentIds, lastUserIndex, removedMessages, lastUserMessageAtBefore, memoryPassThroughBefore);
+        }
+        finally
+        {
+            conversation.TurnLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Puts back a turn that RemoveLastTurnAsync took out, after its rerun failed or was stopped,
+    /// so a regenerate that doesn't finish never loses the original reply.
+    /// Does nothing if the chat has changed since (the rerun kept messages, or something else was added).
+    /// </summary>
+    public async Task RestoreRemovedTurnAsync(Conversation conversation, RemovedTurn removedTurn)
+    {
+        await conversation.TurnLock.WaitAsync(CancellationToken.None);
+        try
+        {
+            if (conversation.Messages.Count != removedTurn.FirstRemovedIndex)
+            {
+                logger.LogWarning("Chat {ConversationId}: couldn't put the removed turn back; the chat changed in the meantime", conversation.Id);
+                return;
+            }
+
+            conversation.Messages.AddRange(removedTurn.RemovedMessages.Select(message => (JsonObject)message.DeepClone()));
+            conversation.LastUserMessageAt = removedTurn.LastUserMessageAtBefore;
+            conversationStore.SaveNewMessages(conversation, removedTurn.FirstRemovedIndex);
+            if (conversation.MemoryPassThrough != removedTurn.MemoryPassThroughBefore)
+            {
+                conversation.MemoryPassThrough = removedTurn.MemoryPassThroughBefore;
+                conversationStore.SaveMemoryPassThrough(conversation);
+            }
+
+            logger.LogInformation("Chat {ConversationId}: the regenerate didn't finish, so the previous turn was put back", conversation.Id);
         }
         finally
         {
@@ -651,11 +713,6 @@ public sealed partial class ChatLoop
         if (trimmedText.StartsWith("/quick", StringComparison.OrdinalIgnoreCase))
         {
             return (trimmedText["/quick".Length..].Trim(), ThinkingLevel.Off);
-        }
-        
-        if (trimmedText.StartsWith("/code", StringComparison.OrdinalIgnoreCase))
-        {
-            return (trimmedText["/code".Length..].Trim(), ThinkingLevel.Code);
         }
 
         if (trimmedText.StartsWith("/think", StringComparison.OrdinalIgnoreCase))

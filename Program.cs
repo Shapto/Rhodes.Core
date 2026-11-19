@@ -272,6 +272,8 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
     }
 
     await SendAsync(new { type = "conversation", text = conversation.Id });
+    RemovedTurn? removedTurn = null;
+    var turnFinished = false;
     try
     {
         var messageText = chatRequest.Message;
@@ -279,7 +281,7 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         if (chatRequest.Regenerate == true)
         {
             // Regenerate reruns Shapto's last message; with new text, it's an edit of that message.
-            var removedTurn = await chatLoop.RemoveLastTurnAsync(conversation, cancellationToken);
+            removedTurn = await chatLoop.RemoveLastTurnAsync(conversation, cancellationToken);
             if (removedTurn is null)
             {
                 await SendAsync(new { type = "error", text = "There's no reply to regenerate in this chat." });
@@ -298,6 +300,7 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
 
         var userMessageIndex = conversation.Messages.Count;
         var turnResult = await chatLoop.RunTurnAsync(conversation, messageText, attachmentIds, chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
+        turnFinished = true;
         await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s", userMessageIndex, replyMessageIndex = conversation.Messages.Count - 1, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation), statistics = turnResult.Statistics, sentAt = DateTimeOffset.Now });
 
         var newTitle = await chatTitler.TitleNewChatAsync(conversation, CancellationToken.None);
@@ -319,6 +322,14 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
     {
         // I pressed stop or closed the page; the turn has already been rolled back.
+    }
+    finally
+    {
+        // A regenerate that failed or was stopped puts the old turn back instead of leaving the chat without it.
+        if (removedTurn is not null && !turnFinished)
+        {
+            await chatLoop.RestoreRemovedTurnAsync(conversation, removedTurn);
+        }
     }
 
     async Task TrySendAsync(object payload)

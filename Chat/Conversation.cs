@@ -55,9 +55,16 @@ public sealed class Conversation
 public sealed record ChatRequest(string Message, string? Client, string? Thinking, string? ConversationId, IReadOnlyList<string>? AttachmentIds, bool? Regenerate);
 
 /// <summary>
-/// What Shapto's last message said and which files it had, after the turn was removed to run it again.
+/// What Shapto's last message said and which files it had, after the turn was removed to run it again,
+/// plus everything needed to put the turn back if the rerun doesn't finish.
 /// </summary>
-public sealed record RemovedTurn(string MessageText, IReadOnlyList<string> AttachmentIds);
+public sealed record RemovedTurn(
+    string MessageText,
+    IReadOnlyList<string> AttachmentIds,
+    int FirstRemovedIndex,
+    IReadOnlyList<JsonObject> RemovedMessages,
+    DateTimeOffset? LastUserMessageAtBefore,
+    int MemoryPassThroughBefore);
 
 /// <summary>
 /// Numbers for one finished turn: the last model call's prompt and cache, everything generated across all calls.
