@@ -389,14 +389,16 @@ function stopEditingLastMessage(clearInput) {
 }
 
 // Removes the last turn from the page and asks the core to run it again; with editedText, it's an edit.
+// A stopped or failed turn was never kept on the core, so there's nothing to replace there: it goes out as a new message.
 function regenerateLastTurn(editedText) {
     if (!canChangeLastTurn() || activeTurnController || compactionInProgress || !modelReady) return;
     const lastUserElement = lastMessageElement('from-user');
     const messageText = editedText !== null ? editedText : lastUserElement.messageText;
     const attachments = lastUserElement.attachments;
+    const replacesCoreTurn = lastUserElement.keptOnCore === true;
     while (lastUserElement.nextSibling) lastUserElement.nextSibling.remove();
     lastUserElement.remove();
-    sendMessage(messageText, attachments, { regenerate: true, editedText });
+    sendMessage(messageText, attachments, replacesCoreTurn ? { regenerate: true, editedText } : undefined);
 }
 
 // ---------- context and readouts ----------
@@ -649,6 +651,7 @@ function buildConversationView(conversationView) {
         if (displayMessage.role === 'user') {
             const userMessage = createUserMessage(newMessagesContainer, displayMessage.text, displayMessage.attachments, displayMessage.sentAt, isSummarized);
             addPinButton(userMessage.messageElement, conversationView.id, displayMessage.index, displayMessage.pinned);
+            userMessage.messageElement.keptOnCore = true;
             closureMessage = null;
             continue;
         }
@@ -956,6 +959,7 @@ async function sendMessage(messageText, attachmentsToSend, options) {
                 statusLine.hidden = true;
                 if (answer) renderAnswer(answer);
                 addPinButton(userMessage.messageElement, turnConversationId, chatEvent.userMessageIndex, false);
+                userMessage.messageElement.keptOnCore = true;
                 if (answer && answer.rawText.trim()) addPinButton(closureMessage.messageElement, turnConversationId, chatEvent.replyMessageIndex, false);
                 if (isCurrentChat) {
                     showContext(chatEvent.contextTokens, chatEvent.contextLimit, chatEvent.contextSplit);
