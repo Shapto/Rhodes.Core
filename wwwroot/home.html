@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="workbench.css">
     <link rel="stylesheet" href="heartbeat.css">
     <link rel="stylesheet" href="memory-review.css">
+    <link rel="stylesheet" href="models-settings.css">
 </head>
 <body>
     <div class="home">
@@ -77,6 +78,18 @@
                     </div>
                     <div class="journal-list" id="journalList"><span class="readout-empty">loading…</span></div>
                     <button type="button" class="load-more mono" id="journalMoreButton" hidden>OLDER ENTRIES</button>
+                </section>
+
+                <section class="panel cut" aria-labelledby="settingsHeading">
+                    <div class="panel-heading label">
+                        <span id="settingsHeading">SETTINGS</span>
+                        <span class="panel-heading-note mono">saved to Data/appsettings.Local.json · LIVE applies now, the rest after a restart</span>
+                    </div>
+                    <div class="settings-list" id="settingsList"><span class="readout-empty">loading…</span></div>
+                    <div class="away-actions">
+                        <button type="button" class="turn-action" id="restartButton" title="Restart the core so saved settings apply. The model stays loaded.">RESTART CORE</button>
+                        <span class="mono bench-meta" id="settingsMeta"></span>
+                    </div>
                 </section>
 
                 <section class="panel cut workbench" aria-labelledby="workbenchHeading">
@@ -196,6 +209,15 @@
                     </dl>
                 </section>
 
+                <section class="panel cut" aria-labelledby="modelHeading">
+                    <div class="panel-heading label">
+                        <span id="modelHeading">MODEL</span>
+                        <span class="panel-heading-note mono" id="modelNote"></span>
+                    </div>
+                    <div class="model-list" id="modelList"><span class="readout-empty">loading…</span></div>
+                    <p class="bench-note mono" id="modelHint" hidden></p>
+                </section>
+
                 <section class="panel cut" aria-labelledby="recentHeading">
                     <div class="panel-heading label" id="recentHeading">RECENT CHATS</div>
                     <div class="recent-chats" id="recentChats"><span class="readout-empty">loading…</span></div>
@@ -252,5 +274,6 @@
     <script src="workbench.js"></script>
     <script src="heartbeat.js"></script>
     <script src="memory-review.js"></script>
+    <script src="models-settings.js"></script>
 </body>
 </html>

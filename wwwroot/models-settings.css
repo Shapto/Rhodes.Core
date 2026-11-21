@@ -1,0 +1,161 @@
+/* Rhodes home page: the MODEL and SETTINGS panels. Uses the tokens from rhodes.css and the inputs from home.css. */
+
+/* ---------- model ---------- */
+
+.model-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.model-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    background: var(--ground);
+}
+
+    .model-row.current {
+        border-color: var(--accent-dim);
+        box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+.model-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.model-name {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+    color: var(--text-strong);
+}
+
+.model-status {
+    flex: none;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+}
+
+    .model-status[data-status="loaded"],
+    .model-status[data-status="sleeping"] {
+        color: var(--accent);
+    }
+
+    .model-status[data-status="loading"],
+    .model-status[data-status="downloading"] {
+        color: var(--warning);
+    }
+
+.model-meta {
+    font-size: 11px;
+    color: var(--text-faint);
+    overflow-wrap: anywhere;
+}
+
+.model-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+    .model-actions .turn-action:disabled {
+        opacity: 0.4;
+        cursor: default;
+    }
+
+.model-current-mark {
+    margin-left: auto;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+}
+
+/* ---------- settings ---------- */
+
+.settings-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.setting-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 220px);
+    gap: 14px;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+    .setting-row:last-child {
+        border-bottom: none;
+    }
+
+.setting-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.setting-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.setting-label {
+    font-size: 14px;
+    color: var(--text-strong);
+}
+
+.setting-badge {
+    padding: 1px 6px;
+    border: 1px solid var(--line-strong);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+}
+
+    .setting-badge.live {
+        border-color: var(--accent-dim);
+        color: var(--accent);
+    }
+
+    .setting-badge.pending {
+        border-color: var(--warning);
+        color: var(--warning);
+    }
+
+.setting-description {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.setting-key {
+    font-size: 10px;
+    color: var(--text-faint);
+}
+
+.setting-input {
+    width: 100%;
+}
+
+    .setting-input:disabled {
+        opacity: 0.5;
+    }
+
+@media (max-width: 700px) {
+    .setting-row {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+    }
+}

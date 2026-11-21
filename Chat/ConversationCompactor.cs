@@ -25,19 +25,21 @@ public sealed class ConversationCompactor
     private readonly ChatLoop chatLoop;
     private readonly ConversationStore conversationStore;
     private readonly string personaPath;
-    private readonly int contextTokens;
+    private readonly ModelManager modelManager;
     private readonly ILogger<ConversationCompactor> logger;
+
+    private int contextTokens => modelManager.ContextTokens;
     private readonly ChatTitler chatTitler;
     private readonly MemoryExtractor memoryExtractor;
 
-    public ConversationCompactor(LmStudioClient lmStudioClient, ChatLoop chatLoop, ChatTitler chatTitler, MemoryExtractor memoryExtractor, ConversationStore conversationStore, string personaPath, int contextTokens, ILogger<ConversationCompactor> logger)
+    public ConversationCompactor(LmStudioClient lmStudioClient, ChatLoop chatLoop, ChatTitler chatTitler, MemoryExtractor memoryExtractor, ConversationStore conversationStore, string personaPath, ModelManager modelManager, ILogger<ConversationCompactor> logger)
     {
         this.memoryExtractor = memoryExtractor;
         this.lmStudioClient = lmStudioClient;
         this.chatLoop = chatLoop;
         this.conversationStore = conversationStore;
         this.personaPath = personaPath;
-        this.contextTokens = contextTokens;
+        this.modelManager = modelManager;
         this.logger = logger;
         this.chatTitler = chatTitler;
     }

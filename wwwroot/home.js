@@ -39,7 +39,7 @@ function showModelStatus(modelStatus) {
     modelChip.textContent = describeModelChip(modelStatus.state, modelStatus.tokensPerSecond);
     modelChip.title = modelStatus.detail || '';
     document.getElementById('moduleCore').textContent = modelStatus.state === 'unreachable' ? 'offline' : 'online';
-    document.getElementById('moduleModel').textContent = modelStatus.state === 'unreachable' ? '—' : modelStatus.state;
+    document.getElementById('moduleModel').textContent = modelStatus.state === 'unreachable' ? '—' : modelStatus.model ? modelStatus.state + ' · ' + modelStatus.model : modelStatus.state;
     document.getElementById('moduleModel').title = modelStatus.detail || '';
     document.getElementById('moduleSpeed').textContent = modelStatus.tokensPerSecond ? modelStatus.tokensPerSecond.toFixed(1) + ' t/s' : '—';
 }

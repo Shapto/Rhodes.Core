@@ -1,8 +1,9 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Rhodes.Core.Approvals;
 using Rhodes.Core.Chat;
 using Rhodes.Core.Documents;
 using Rhodes.Core.Memory;
+using Rhodes.Core.Settings;
 using Rhodes.Core.Tools;
 using Rhodes.Core.Web;
 using Rhodes.Core.Workspace;
@@ -92,15 +93,38 @@ var contextTokens = builder.Configuration.GetValue("Chat:ContextTokens", 64000);
 builder.Services.AddSingleton(new UploadStore(Path.Combine(Path.GetDirectoryName(databasePath)!, "uploads")));
 builder.Services.AddSingleton(new DocumentStore(Path.Combine(Path.GetDirectoryName(databasePath)!, "rhodes.db"), Path.Combine(Path.GetDirectoryName(databasePath)!, "documents")));
 
+// The model picker and settings on the home page save to Data/appsettings.Local.json (the file that wins at startup).
+var localSettingsPath = Path.Combine(rhodesDataFolder ?? dataFolder, "appsettings.Local.json");
+if (rhodesDataFolder is null)
+{
+    builder.Configuration.AddJsonFile(localSettingsPath, optional: true);
+}
+
+var localSettingsFile = new Rhodes.Core.Settings.LocalSettingsFile(localSettingsPath);
+builder.Services.AddSingleton(localSettingsFile);
+builder.Services.AddSingleton(serviceProvider => new ModelManager(
+    builder.Configuration["LmStudio:BaseUrl"] ?? "http://localhost:1234/v1",
+    builder.Configuration[ModelManager.SettingKey] ?? "",
+    contextTokens,
+    builder.Configuration[ModelManager.VisionSettingKey],
+    localSettingsFile,
+    serviceProvider.GetRequiredService<ILogger<ModelManager>>()));
+builder.Services.AddSingleton(serviceProvider => new Rhodes.Core.Settings.CoreSettings(
+    localSettingsFile,
+    builder.Configuration,
+    serviceProvider.GetRequiredService<ModelManager>(),
+    serviceProvider.GetRequiredService<ILogger<Rhodes.Core.Settings.CoreSettings>>()));
+
 builder.Services.AddSingleton(serviceProvider => new LmStudioClient(
     builder.Configuration["LmStudio:BaseUrl"] ?? "http://localhost:1234/v1",
-    builder.Configuration["LmStudio:Model"] ?? "",
+    serviceProvider.GetRequiredService<ModelManager>(),
     builder.Configuration["LmStudio:ApiKey"],
     serviceProvider.GetRequiredService<ILogger<LmStudioClient>>()));
 
 builder.Services.AddSingleton(serviceProvider => new ModelStatusMonitor(
     builder.Configuration["LmStudio:BaseUrl"] ?? "http://localhost:1234/v1",
     serviceProvider.GetRequiredService<LmStudioClient>(),
+    serviceProvider.GetRequiredService<ModelManager>(),
     serviceProvider.GetRequiredService<ILogger<ModelStatusMonitor>>()));
 builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<ModelStatusMonitor>());
 
@@ -120,8 +144,7 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     serviceProvider.GetServices<ICoreTool>(),
     personaPath,
     builder.Configuration.GetValue("Chat:MaximumThinkingCharacters", 24000),
-    contextTokens,
-    builder.Configuration.GetValue("LmStudio:Vision", false),
+    serviceProvider.GetRequiredService<ModelManager>(),
     serviceProvider.GetRequiredService<ILogger<ChatLoop>>()));
 
 builder.Services.AddSingleton<ChatTitler>();
@@ -150,7 +173,7 @@ builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
     serviceProvider.GetRequiredService<MemoryExtractor>(),
     conversationStore,
     personaPath,
-    contextTokens,
+    serviceProvider.GetRequiredService<ModelManager>(),
     serviceProvider.GetRequiredService<ILogger<ConversationCompactor>>()));
 
 // Memory upkeep: filing durable facts after a chat goes quiet (and before compaction), and Closure's cleanup proposals.
@@ -208,6 +231,32 @@ app.UseStaticFiles(new StaticFileOptions
 });
 app.MapGet("/", () => Results.Redirect("/home.html"));
 app.MapGet("/status", (ModelStatusMonitor modelStatusMonitor) => modelStatusMonitor.Current);
+
+// Model switching (llama-server router mode, one [section] per model in models.ini) and the home page's settings.
+app.MapGet("/models", async (ModelManager modelManager, CancellationToken cancellationToken) =>
+{
+    var routerModels = await modelManager.RefreshAsync(cancellationToken);
+    return Results.Ok(new
+    {
+        Reachable = routerModels is not null,
+        modelManager.IsRouter,
+        modelManager.CurrentModel,
+        modelManager.ContextTokens,
+        modelManager.VisionEnabled,
+        modelManager.AutoLoadPaused,
+        modelManager.LastLoadError,
+        Models = modelManager.KnownModels.Select(routerModel => new { routerModel.Id, routerModel.Status, routerModel.FilePath, routerModel.ContextTokens, routerModel.HasVision }),
+    });
+});
+app.MapPost("/models/select", (ModelChoice modelChoice, ModelManager modelManager) =>
+    modelManager.Select(modelChoice.Model) is { } errorText ? Results.BadRequest(errorText) : Results.Ok());
+app.MapPost("/models/unload", async (ModelChoice modelChoice, ModelManager modelManager, CancellationToken cancellationToken) =>
+    await modelManager.UnloadAsync(modelChoice.Model, cancellationToken) is { } errorText ? Results.BadRequest(errorText) : Results.Ok());
+app.MapGet("/settings", (Rhodes.Core.Settings.CoreSettings coreSettings) => coreSettings.List());
+app.MapPost("/settings", (SettingChange settingChange, Rhodes.Core.Settings.CoreSettings coreSettings) =>
+    coreSettings.Save(settingChange.Key, settingChange.Value) is { } errorText ? Results.BadRequest(errorText) : Results.Ok(coreSettings.List()));
+app.MapPost("/core/restart", (IHostApplicationLifetime applicationLifetime) =>
+    Rhodes.Core.Settings.CoreSettings.StartRestart(applicationLifetime) is { } errorText ? Results.BadRequest(errorText) : Results.Ok());
 
 // Profile pictures live in Data\pictures
 var picturesFolder = Path.Combine(Path.GetDirectoryName(databasePath)!, "pictures");

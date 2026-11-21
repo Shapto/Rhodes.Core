@@ -172,7 +172,7 @@ function describeModelChip(state, tokensPerSecond) {
 }
 
 /**
- * Asks /status every 5 seconds and passes { state, detail, tokensPerSecond } to onStatus.
+ * Asks /status every 5 seconds and passes { state, detail, tokensPerSecond, model } to onStatus.
  * "unreachable" means the core itself didn't answer.
  */
 function startModelStatusPolling(onStatus) {
@@ -180,7 +180,7 @@ function startModelStatusPolling(onStatus) {
         try {
             const response = await fetch('/status', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
             const modelStatus = await response.json();
-            onStatus({ state: modelStatus.state, detail: modelStatus.detail, tokensPerSecond: modelStatus.tokensPerSecond });
+            onStatus({ state: modelStatus.state, detail: modelStatus.detail, tokensPerSecond: modelStatus.tokensPerSecond, model: modelStatus.model || '' });
         } catch {
             onStatus({ state: 'unreachable', detail: "can't reach the Rhodes core", tokensPerSecond: null });
         }

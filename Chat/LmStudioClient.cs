@@ -15,7 +15,7 @@ public sealed class LmStudioClient
     public const string ContentDelta = "content";
 
     private readonly HttpClient httpClient;
-    private readonly string modelIdentifier;
+    private readonly ModelManager modelManager;
     private readonly ILogger<LmStudioClient> logger;
 
     private const int MinimumTokensForSpeed = 16;
@@ -72,7 +72,7 @@ public sealed class LmStudioClient
 
     public double? LastTokensPerSecond { get; private set; }
 
-    public LmStudioClient(string baseUrl, string modelIdentifier, string? apiKey, ILogger<LmStudioClient> logger)
+    public LmStudioClient(string baseUrl, ModelManager modelManager, string? apiKey, ILogger<LmStudioClient> logger)
     {
         var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) };
         httpClient = new HttpClient(handler)
@@ -85,7 +85,7 @@ public sealed class LmStudioClient
             httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         }
 
-        this.modelIdentifier = modelIdentifier;
+        this.modelManager = modelManager;
         this.logger = logger;
     }
 
@@ -98,7 +98,8 @@ public sealed class LmStudioClient
     {
         var requestBody = new JsonObject
         {
-            ["model"] = modelIdentifier,
+            // The router picks the model by this name (its [section] in models.ini); a single-model llama-server ignores it.
+            ["model"] = modelManager.CurrentModel,
             ["messages"] = messages,
             ["stream"] = true,
             ["stream_options"] = new JsonObject { ["include_usage"] = true },

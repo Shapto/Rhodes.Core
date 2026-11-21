@@ -63,12 +63,11 @@ public sealed partial class ChatLoop
     private readonly int maximumThinkingCharacters;
     private readonly ConversationStore conversationStore;
     private readonly UploadStore uploadStore;
-    private readonly int contextTokens;
+    private readonly ModelManager modelManager;
     private readonly DocumentStore documentStore;
     private readonly HeartbeatStore heartbeatStore;
     private readonly ApprovalService approvalService;
     private readonly LittleHandyTool? littleHandyTool;
-    private readonly bool visionEnabled;
 
     private const string ReviewApprovedMarker = "ANSWER_OK";
 
@@ -82,14 +81,13 @@ public sealed partial class ChatLoop
         "If something is wrong, reply with only the corrected full answer, written to Shapto as your answer, without mentioning this check.";
 
 
-    public ChatLoop(LmStudioClient lmStudioClient, MemoryRanker memoryRanker, ConversationStore conversationStore, UploadStore uploadStore, DocumentStore documentStore, HeartbeatStore heartbeatStore, ApprovalService approvalService, IEnumerable<ICoreTool> tools, string personaPath, int maximumThinkingCharacters, int contextTokens, bool visionEnabled, ILogger<ChatLoop> logger)
+    public ChatLoop(LmStudioClient lmStudioClient, MemoryRanker memoryRanker, ConversationStore conversationStore, UploadStore uploadStore, DocumentStore documentStore, HeartbeatStore heartbeatStore, ApprovalService approvalService, IEnumerable<ICoreTool> tools, string personaPath, int maximumThinkingCharacters, ModelManager modelManager, ILogger<ChatLoop> logger)
     {
-        this.visionEnabled = visionEnabled;
+        this.modelManager = modelManager;
         this.heartbeatStore = heartbeatStore;
         this.approvalService = approvalService;
         this.uploadStore = uploadStore;
         this.documentStore = documentStore;
-        this.contextTokens = contextTokens;
         this.lmStudioClient = lmStudioClient;
         this.memoryRanker = memoryRanker;
         this.tools = tools.ToList();
@@ -106,6 +104,13 @@ public sealed partial class ChatLoop
     /// (then requests carry only the text note about the image).
     /// </summary>
     private Func<string, string?>? ImageResolver => visionEnabled ? uploadStore.LoadImageDataUrl : null;
+
+    /// <summary>
+    /// The current model's context size and vision; both follow the model picked on the home page.
+    /// </summary>
+    private int contextTokens => modelManager.ContextTokens;
+
+    private bool visionEnabled => modelManager.VisionEnabled;
 
     /// <summary>
     /// Asks her to check her finished answer against this turn's tool results.
