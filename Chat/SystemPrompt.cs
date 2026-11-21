@@ -17,15 +17,35 @@ public static class SystemPrompt
         """;
 
     /// <summary>
+    /// Where code-style.md lives, remembered by EnsureCodeStyleFile at startup; null until then.
+    /// </summary>
+    private static string? knownCodeStylePath;
+
+    /// <summary>
     /// Writes the default code-style.md next to the persona if there isn't one yet, so Shapto can edit it.
     /// </summary>
     public static void EnsureCodeStyleFile(string personaPath)
     {
         var codeStylePath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(personaPath))!, CodeStyleFileName);
+        knownCodeStylePath = codeStylePath;
         if (!File.Exists(codeStylePath))
         {
             File.WriteAllText(codeStylePath, DefaultCodeStyle + "\n");
         }
+    }
+
+    /// <summary>
+    /// Shapto's code style on its own, for helpers that don't get the whole system prompt (Little Handy's reviews).
+    /// Empty if there is no code-style.md.
+    /// </summary>
+    public static async Task<string> LoadCodeStyleAsync(CancellationToken cancellationToken)
+    {
+        if (knownCodeStylePath is null || !File.Exists(knownCodeStylePath))
+        {
+            return "";
+        }
+
+        return (await File.ReadAllTextAsync(knownCodeStylePath, cancellationToken)).Trim();
     }
 
     public static async Task<string> LoadAsync(string personaPath, CancellationToken cancellationToken)

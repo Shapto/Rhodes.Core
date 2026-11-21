@@ -43,6 +43,8 @@ public sealed partial class ChatLoop
     private const string EmptyAnswerNudge = "[Rhodes: you stopped without answering. Carry on with what you were doing (call the next tool), or tell Shapto what you found and what's still open.]";
     private const string UnverifiedCodeNudge = "[Rhodes: you changed code this turn but haven't built or run it since your last change. Build or test it now with run_command, check every behavior Shapto asked for (error cases included), and fix what fails. If it can't be run here, say plainly in your answer that it's untested.]";
 
+    private const string ReviewNudgeTemplate = "[Rhodes: before you answer, have Little Handy review what you changed: call little_handy with mode \"review\" and a task naming these files and what Shapto asked for: {0}. Check his findings, fix the real problems, build again, then answer.]";
+
     private static readonly HashSet<string> CodingToolNames = ["edit_file", "write_file", "run_command"];
     private static readonly HashSet<string> BuildableExtensions = new(StringComparer.OrdinalIgnoreCase) { ".cs", ".csproj", ".py", ".js", ".ts", ".java" };
 
@@ -215,6 +217,7 @@ public sealed partial class ChatLoop
             var announcedReasoning = "";
             var nudgeUsed = false;
             var verifyNudgeUsed = false;
+            var reviewNudgeUsed = false;
             var currentNudge = UnfinishedActionNudge;
             // The last turn's size seeds the estimate, so even this turn's first request is checked before it goes out.
             var previousRequestCharacters = conversation.LastContextTokens is null ? 0 : conversation.LastRequestCharacters;
@@ -408,6 +411,19 @@ public sealed partial class ChatLoop
                     announcedAction = answer;
                     announcedReasoning = reasoning;
                     logger.LogInformation("Chat {ConversationId}: code changed without a build or run since; nudging once", conversation.Id);
+                    await EmitAsync(onEvent, new ChatEvent("content", "\n\n"));
+                    continue;
+                }
+
+                // Code changed that Little Handy hasn't looked at: one nudge per turn to have him review it before she calls it done.
+                var unreviewedCodeFiles = GetUnreviewedCodeFiles(toolSteps);
+                if (offerTools && !reviewNudgeUsed && thinkingLevel != ThinkingLevel.Off && unreviewedCodeFiles.Count > 0)
+                {
+                    reviewNudgeUsed = true;
+                    currentNudge = string.Format(CultureInfo.InvariantCulture, ReviewNudgeTemplate, string.Join(", ", unreviewedCodeFiles));
+                    announcedAction = answer;
+                    announcedReasoning = reasoning;
+                    logger.LogInformation("Chat {ConversationId}: code changed without a review; nudging once to ask Little Handy", conversation.Id);
                     await EmitAsync(onEvent, new ChatEvent("content", "\n\n"));
                     continue;
                 }
@@ -736,15 +752,44 @@ public sealed partial class ChatLoop
         var lastCodeChangeIndex = -1;
         for (var stepIndex = 0; stepIndex < turnToolSteps.Count; stepIndex++)
         {
-            var toolStep = turnToolSteps[stepIndex];
-            var changedCodeFile = toolStep.ToolName is "write_file" or "edit_file" && !toolStep.Result.StartsWith("Error", StringComparison.Ordinal) && BuildableExtensions.Contains(Path.GetExtension(ReadPathArgument(toolStep.Arguments)));
-            if (changedCodeFile)
+            if (IsCodeFileChange(turnToolSteps[stepIndex]))
             {
                 lastCodeChangeIndex = stepIndex;
             }
         }
 
         return lastCodeChangeIndex >= 0 && !turnToolSteps.Skip(lastCodeChangeIndex + 1).Any(toolStep => toolStep.ToolName == "run_command");
+    }
+
+    /// <summary>
+    /// The code files this turn changed after Little Handy's last finished job in it (all of them if he had none), each once.
+    /// </summary>
+    private static List<string> GetUnreviewedCodeFiles(IReadOnlyList<ToolStep> turnToolSteps)
+    {
+        var lastHandyJobIndex = -1;
+        for (var stepIndex = 0; stepIndex < turnToolSteps.Count; stepIndex++)
+        {
+            var toolStep = turnToolSteps[stepIndex];
+            if (toolStep.ToolName == "little_handy" && !toolStep.Result.StartsWith("Error", StringComparison.Ordinal))
+            {
+                lastHandyJobIndex = stepIndex;
+            }
+        }
+
+        return turnToolSteps
+            .Skip(lastHandyJobIndex + 1)
+            .Where(IsCodeFileChange)
+            .Select(toolStep => ReadPathArgument(toolStep.Arguments))
+            .Distinct()
+            .ToList();
+    }
+
+    /// <summary>
+    /// True for a write_file or edit_file that went through on a file that gets built or run (.cs, .py, …).
+    /// </summary>
+    private static bool IsCodeFileChange(ToolStep toolStep)
+    {
+        return toolStep.ToolName is "write_file" or "edit_file" && !toolStep.Result.StartsWith("Error", StringComparison.Ordinal) && BuildableExtensions.Contains(Path.GetExtension(ReadPathArgument(toolStep.Arguments)));
     }
 
     /// <summary>

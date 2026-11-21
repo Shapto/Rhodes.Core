@@ -110,10 +110,21 @@ namespace Rhodes.Core.Tools
                 .Where(coreTool => HandyToolNames.Contains(coreTool.Name))
                 .ToList();
             var toolDefinitions = BuildToolDefinitions(handyTools);
+            var jobText = $"Job ({mode}): {task}\n\n{modeInstruction}";
+            if (mode == "review")
+            {
+                // He can't see her system prompt, so a review gets Shapto's code style handed to it.
+                var codeStyle = await Chat.SystemPrompt.LoadCodeStyleAsync(cancellationToken);
+                if (codeStyle.Length > 0)
+                {
+                    jobText += "\n\nAlso check the code against Shapto's code style below, and list style problems separately from real bugs.\n\n" + codeStyle;
+                }
+            }
+
             var requestMessages = new JsonArray
             {
                 new JsonObject { ["role"] = "system", ["content"] = SystemPrompt },
-                new JsonObject { ["role"] = "user", ["content"] = $"Job ({mode}): {task}\n\n{modeInstruction}" },
+                new JsonObject { ["role"] = "user", ["content"] = jobText },
             };
             var completedCalls = new HashSet<string>();
             var stepCount = 0;
