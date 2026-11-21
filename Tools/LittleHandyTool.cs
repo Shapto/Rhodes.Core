@@ -23,13 +23,29 @@ namespace Rhodes.Core.Tools
         private static readonly HashSet<string> HandyToolNames =
         [
             "search_memory", "search_chats", "read_chat", "search_document", "read_document", "web_search", "web_fetch", "list_files", "read_file",
+            "search_knowledge", "read_knowledge",
         ];
+
+        /// <summary>
+        /// The line a claim check ends with when every claim checked out, so Rhodes knows the draft can go out as it is.
+        /// </summary>
+        public const string AllClaimsVerifiedMarker = "ALL_CLAIMS_VERIFIED";
+
+        private const int MaximumCheckedDraftCharacters = 12000;
 
         private static readonly Dictionary<string, string> ModeInstructions = new()
         {
             ["dig"] = "Find the specific thing asked for. Quote the exact lines, messages or passages that answer it, with where they are.",
             ["overview"] = "Map it: the structure, the main parts and how they connect, where things start, anything that stands out. Read enough to be accurate, not every file.",
-            ["review"] = "Review the code named in the task: bugs, risky spots, missing error handling, confusing parts. Point at exact files and lines. Keep real problems separate from style.",
+            ["review"] = "Review the code named in the task: bugs, risky spots, missing error handling, confusing parts. Check that every API, method and setting it uses really exists (search_knowledge, read_file). Point at exact files and lines. Keep real problems separate from style.",
+            ["verify"] =
+                "Check the facts in Closure's draft answer before Shapto sees it. List every factual claim in it: about Shapto's code, files, setup or plans, and about APIs, " +
+                "class and method names, file paths, settings, versions and how things behave. Skip opinions, advice, jokes and style. Mark each claim:\n" +
+                "- VERIFIED: shown in what she looked at this turn, or confirmed now with your tools. Say where.\n" +
+                "- WRONG: your tools show otherwise. Say what is true and where you saw it.\n" +
+                "- UNVERIFIED: you couldn't confirm it either way.\n" +
+                "Check every claim that isn't already covered: search_knowledge first (RimWorld source and Defs, Shapto's repos, .NET docs, lore), then the other tools. " +
+                "Never mark a claim VERIFIED from your own knowledge alone. If every claim is VERIFIED, end your report with the line " + AllClaimsVerifiedMarker + ".",
         };
 
         private const string SystemPrompt =
@@ -102,6 +118,47 @@ namespace Rhodes.Core.Tools
             }
         }
 
+        /// <summary>
+        /// Little Handy's assumption check, run by Rhodes (not by Closure) before a substantial answer goes out:
+        /// he lists the draft's factual claims and checks the ones not already backed by what she looked at this turn.
+        /// Returns his report when something is wrong or unverified, or null when everything checked out or he couldn't run.
+        /// His context is thrown away afterwards, so the check costs her context nothing.
+        /// </summary>
+        public async Task<string?> CheckClaimsAsync(string shaptoMessage, string draftAnswer, string turnEvidence, CancellationToken cancellationToken)
+        {
+            if (!await jobLock.WaitAsync(0, cancellationToken))
+            {
+                return null;
+            }
+
+            try
+            {
+                var shownDraft = draftAnswer.Length > MaximumCheckedDraftCharacters ? draftAnswer[..MaximumCheckedDraftCharacters] + "\n[draft cut short]" : draftAnswer;
+                var task = $"""
+                    Shapto asked:
+                    {shaptoMessage}
+
+                    Closure's draft answer:
+                    ---
+                    {shownDraft}
+                    ---
+
+                    {turnEvidence}
+                    """;
+                var report = await RunJobAsync(task, "verify", ModeInstructions["verify"], cancellationToken);
+                if (report.StartsWith("Error", StringComparison.Ordinal) || report.Contains(AllClaimsVerifiedMarker, StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                return report;
+            }
+            finally
+            {
+                jobLock.Release();
+            }
+        }
+
         private async Task<string> RunJobAsync(string task, string mode, string modeInstruction, CancellationToken cancellationToken)
         {
             var stopwatch = Stopwatch.StartNew();
@@ -144,7 +201,7 @@ namespace Rhodes.Core.Tools
                     stepMessages.Add(new JsonObject { ["role"] = "user", ["content"] = "No more tool calls. Write your report now from what you found, and list what you didn't get to." });
                 }
 
-                var responseMessage = await lmStudioClient.StreamCompletionAsync(stepMessages, offerTools ? (JsonArray)toolDefinitions.DeepClone() : null, mode == "review" ? ThinkingLevel.Code : ThinkingLevel.Light, (_, _) => Task.FromResult(true), cancellationToken);
+                var responseMessage = await lmStudioClient.StreamCompletionAsync(stepMessages, offerTools ? (JsonArray)toolDefinitions.DeepClone() : null, mode is "review" or "verify" ? ThinkingLevel.Code : ThinkingLevel.Light, (_, _) => Task.FromResult(true), cancellationToken);
                 previousRequestCharacters = requestCharacters;
                 previousPromptTokens = GetInteger(responseMessage["rhodes_prompt_tokens"]) ?? previousPromptTokens;
                 var (_, answer) = ThinkingSplitter.Split(GetString(responseMessage["content"]), GetString(responseMessage["reasoning_content"]));

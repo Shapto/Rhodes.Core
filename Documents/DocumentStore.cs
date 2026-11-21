@@ -297,8 +297,9 @@ public sealed partial class DocumentStore : IDisposable
 
     /// <summary>
     /// The parts of identifiers, as extra searchable words: "ShinVariant_Base" adds "shin variant base".
+    /// Also used by the knowledge library's index.
     /// </summary>
-    private static string SplitIdentifiers(string text)
+    public static string SplitIdentifiers(string text)
     {
         var parts = new List<string>();
         foreach (Match identifierMatch in IdentifierPattern().Matches(text))

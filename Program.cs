@@ -58,6 +58,15 @@ builder.Services.AddSingleton<ICoreTool, RunCommandTool>();
 builder.Services.AddSingleton<ICoreTool, CloneRepoTool>();
 builder.Services.AddSingleton<ICoreTool, LittleHandyTool>();
 
+// The knowledge library: reference material (decompiled RimWorld, Shapto's repos, .NET docs, lore) in RhodesIsland/Knowledge,
+// keyword-indexed into Data/knowledge.db. Indexing runs in the background at startup and only redoes changed files.
+var knowledgeFolder = builder.Configuration["Knowledge:Path"] ?? Path.Combine(Path.GetDirectoryName(dataFolder)!, "Knowledge");
+builder.Services.AddSingleton(new Rhodes.Core.Knowledge.KnowledgeDatabase(Path.Combine(dataFolder, "knowledge.db"), knowledgeFolder));
+builder.Services.AddSingleton<Rhodes.Core.Knowledge.KnowledgeIndexer>();
+builder.Services.AddHostedService<Rhodes.Core.Knowledge.KnowledgeIndexService>();
+builder.Services.AddSingleton<ICoreTool, SearchKnowledgeTool>();
+builder.Services.AddSingleton<ICoreTool, ReadKnowledgeTool>();
+
 // Sandboxed Python for her math (see PythonSandbox for the three layers).
 // On Linux, Data/python/python is the wrapper from Setup-Rhodes.sh that runs Python with no network.
 string pythonFileName = OperatingSystem.IsWindows() ? "python.exe" : "python";
@@ -112,6 +121,7 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     personaPath,
     builder.Configuration.GetValue("Chat:MaximumThinkingCharacters", 24000),
     contextTokens,
+    builder.Configuration.GetValue("LmStudio:Vision", false),
     serviceProvider.GetRequiredService<ILogger<ChatLoop>>()));
 
 builder.Services.AddSingleton<ChatTitler>();
@@ -349,6 +359,10 @@ app.MapGet("/chats", (ConversationStore conversationStore) => conversationStore.
 
 app.MapGet("/uploads/{uploadId}", (string uploadId, UploadStore uploadStore) =>
     uploadStore.Load(uploadId) is { } upload ? Results.Text(upload.Text, "text/plain; charset=utf-8") : Results.NotFound());
+
+// The original file as uploaded, for showing attached images on the page.
+app.MapGet("/uploads/{uploadId}/raw", (string uploadId, UploadStore uploadStore) =>
+    uploadStore.LoadFile(uploadId) is { } upload ? Results.File(upload.FileBytes, upload.Record.MediaType ?? "application/octet-stream") : Results.NotFound());
 
 app.MapPost("/uploads", async (IFormFile file, UploadStore uploadStore, CancellationToken cancellationToken) =>
 {

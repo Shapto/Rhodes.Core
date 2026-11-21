@@ -164,7 +164,12 @@ async function openFileViewer(uploadId, fileName, estimatedTokens) {
     });
 }
 
-// The file name in a chip opens the file, when the core has it stored (it has an id).
+// An image attachment: kind on a fresh upload, mode on a chip the core sent back.
+function isImageAttachment(attachment) {
+    return attachment.kind === 'image' || (attachment.mode || '').startsWith('image');
+}
+
+// The file name in a chip opens the file, when the core has it stored (it has an id). Images open in a new tab.
 function addFileName(chipElement, attachment) {
     if (!attachment.id) return addElement(chipElement, 'span', 'file-name', attachment.fileName);
     const fileButton = addElement(chipElement, 'button', 'file-name file-open', attachment.fileName);
@@ -172,7 +177,8 @@ function addFileName(chipElement, attachment) {
     fileButton.title = 'Open ' + attachment.fileName;
     fileButton.addEventListener('click', clickEvent => {
         clickEvent.stopPropagation();
-        openFileViewer(attachment.id, attachment.fileName, attachment.estimatedTokens);
+        if (isImageAttachment(attachment)) window.open('/uploads/' + encodeURIComponent(attachment.id) + '/raw', '_blank', 'noopener');
+        else openFileViewer(attachment.id, attachment.fileName, attachment.estimatedTokens);
     });
     return fileButton;
 }
@@ -232,7 +238,8 @@ function addAttachmentChips(parentElement, attachments) {
         const chipElement = addElement(attachmentRow, 'span', 'attachment-chip static' + (indexed ? ' indexed' : tooBig ? ' too-big' : ''));
         addFileName(chipElement, attachment);
         const sizeText = attachment.estimatedTokens !== undefined ? formatTokens(attachment.estimatedTokens) + ' TOK' : '';
-        const sizeElement = addElement(chipElement, 'span', 'file-size', indexed ? sizeText + ' · SEARCHABLE' : tooBig ? sizeText + ' · TOO BIG TO READ YET' : sizeText);
+        const imageText = attachment.mode === 'image-unseen' ? 'IMAGE · NOT SEEN (NO VISION)' : 'IMAGE';
+        const sizeElement = addElement(chipElement, 'span', 'file-size', isImageAttachment(attachment) ? imageText : indexed ? sizeText + ' · SEARCHABLE' : tooBig ? sizeText + ' · TOO BIG TO READ YET' : sizeText);
         if (indexed) sizeElement.title = 'Too big to read whole: she got its map and the parts matching your message, and can search the rest.';
     }
     return attachmentRow;
@@ -777,7 +784,7 @@ function renderPendingAttachments() {
     for (const attachment of pendingAttachments) {
         const chipElement = addElement(chipsFragment, 'span', 'attachment-chip ' + attachment.status);
         addFileName(chipElement, attachment);
-        const sizeTexts = { uploading: 'UPLOADING…', ready: formatTokens(attachment.estimatedTokens || 0) + ' TOK', error: attachment.errorText };
+        const sizeTexts = { uploading: 'UPLOADING…', ready: isImageAttachment(attachment) ? 'IMAGE' : formatTokens(attachment.estimatedTokens || 0) + ' TOK', error: attachment.errorText };
         addElement(chipElement, 'span', 'file-size', sizeTexts[attachment.status]);
         const removeButton = addElement(chipElement, 'button', 'chip-remove', '×');
         removeButton.type = 'button';
@@ -803,7 +810,7 @@ async function uploadFiles(files) {
             const response = await fetch('/uploads', { method: 'POST', body: formData });
             if (response.ok) {
                 const uploadRecord = await response.json();
-                Object.assign(attachment, { status: 'ready', id: uploadRecord.id, fileName: uploadRecord.fileName, estimatedTokens: uploadRecord.estimatedTokens });
+                Object.assign(attachment, { status: 'ready', id: uploadRecord.id, fileName: uploadRecord.fileName, estimatedTokens: uploadRecord.estimatedTokens, kind: uploadRecord.kind });
             } else {
                 Object.assign(attachment, { status: 'error', errorText: await readErrorText(response) });
             }
