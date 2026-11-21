@@ -13,7 +13,7 @@ namespace Rhodes.Core.Tools
     /// he works it in his own fresh context with read-only tools and hands back a short report, so the digging never fills her chat.
     /// One job at a time. His steps show in her trail, and anything that needs approval asks Shapto as usual, marked as his.
     /// </summary>
-    public sealed class LittleHandyTool : ICoreTool
+    public sealed partial class LittleHandyTool : ICoreTool
     {
         private const int MaximumSteps = 20;
         private const int MaximumReportCharacters = 10000;
@@ -33,6 +33,14 @@ namespace Rhodes.Core.Tools
         public const string AllClaimsVerifiedMarker = "ALL_CLAIMS_VERIFIED";
 
         private const int MaximumCheckedDraftCharacters = 12000;
+        private const int MaximumLibraryLookups = 15;
+
+        // Names too common to be worth looking up: they exist everywhere and would only crowd out the interesting ones.
+        private static readonly HashSet<string> CommonCodeNames = new(StringComparer.Ordinal)
+        {
+            "ToString", "Equals", "GetHashCode", "GetType", "Add", "Remove", "Contains", "Count", "Length", "WriteLine", "Write", "Log", "Message", "Warning", "Error",
+            "Serializable", "Obsolete", "print", "require", "pairs", "ipairs", "tostring", "tonumber",
+        };
 
         private static readonly Dictionary<string, string> ModeInstructions = new()
         {
@@ -149,8 +157,17 @@ namespace Rhodes.Core.Tools
                     ---
 
                     {turnEvidence}
+
+                    {BuildLibraryLookups(draftAnswer)}
                     """;
                 var report = await RunJobAsync(task, "verify", ModeInstructions["verify"], cancellationToken);
+                if (ZeroToolCallsPattern().IsMatch(report) && IsCleanPass(report))
+                {
+                    // Passing a draft without looking anything up is just agreeing with her; send him back once to actually check.
+                    logger.LogInformation("Little Handy passed the draft without checking anything; asking him to check");
+                    report = await RunJobAsync(task, "verify", ModeInstructions["verify"] + "\nYour last attempt marked everything VERIFIED without a single tool call. That isn't a check. Look up every API, attribute and member in her code with search_knowledge before you mark anything.", cancellationToken);
+                }
+
                 logger.LogInformation("Little Handy's fact-check report:\n{Report}", report.Length > 4000 ? report[..4000] + "\n[report cut short in the log]" : report);
                 if (report.StartsWith("Error", StringComparison.Ordinal))
                 {
@@ -164,6 +181,52 @@ namespace Rhodes.Core.Tools
             {
                 jobLock.Release();
             }
+        }
+
+        /// <summary>
+        /// Looks up every attribute, method and Harmony special name used in the draft's code blocks in the knowledge library,
+        /// so Little Handy starts from facts instead of from her draft. A name the library doesn't contain at all, when the library
+        /// has that topic's docs (Harmony, .NET, Godot, CC: Tweaked), is a strong sign she made it up.
+        /// </summary>
+        private string BuildLibraryLookups(string draftAnswer)
+        {
+            var knowledgeDatabase = serviceProvider.GetService<Knowledge.KnowledgeDatabase>();
+            if (knowledgeDatabase is null)
+            {
+                return "";
+            }
+
+            // Names from code blocks, plus `inline code` in the prose, where made-up names hide just as often.
+            var codeText = string.Join("\n", CodeFencePattern().Matches(draftAnswer).Select(match => match.Groups["code"].Value));
+            var proseText = CodeFencePattern().Replace(draftAnswer, "");
+            var codeNames = CodeNamePattern().Matches(codeText).Select(match => match.Groups["name"].Value);
+            var inlineNames = InlineCodePattern().Matches(proseText)
+                .Select(match => InlineNamePattern().Match(match.Groups["code"].Value))
+                .Where(match => match.Success)
+                .Select(match => match.Groups["name"].Value);
+            var lookedUpNames = inlineNames
+                .Concat(codeNames)
+                .Where(name => name.Length > 2 && !CommonCodeNames.Contains(name))
+                .Distinct(StringComparer.Ordinal)
+                .Take(MaximumLibraryLookups)
+                .ToList();
+            if (lookedUpNames.Count == 0)
+            {
+                return "";
+            }
+
+            var builder = new StringBuilder("Library lookups Rhodes ran for the names in her code (\"not found\" means the exact name appears nowhere in the knowledge library):\n");
+            foreach (var lookedUpName in lookedUpNames)
+            {
+                var searchResults = knowledgeDatabase.Search(lookedUpName, null, 10);
+                var exactResult = searchResults.FirstOrDefault(result => result.Title.Contains(lookedUpName, StringComparison.Ordinal) || result.Snippet.Replace("[", "").Replace("]", "").Contains(lookedUpName, StringComparison.Ordinal));
+                builder.AppendLine(exactResult is null
+                    ? $"- {lookedUpName}: not found"
+                    : $"- {lookedUpName}: found in {exactResult.RelativePath} lines {exactResult.StartLine}-{exactResult.EndLine} ({exactResult.Title})");
+            }
+
+            builder.Append("Treat a \"not found\" API or attribute as probably made up when the library covers that topic: mark it WRONG unless your own search finds it, and say what the documentation uses instead.");
+            return builder.ToString();
         }
 
         /// <summary>
@@ -306,5 +369,22 @@ namespace Rhodes.Core.Tools
         {
             return node is JsonValue value && value.TryGetValue<int>(out var number) ? number : null;
         }
+
+        [GeneratedRegex(@"```[^\n]*\n(?<code>.*?)```", RegexOptions.Singleline)]
+        private static partial Regex CodeFencePattern();
+
+        // [Attribute], .Method( and Harmony's __special names.
+        [GeneratedRegex(@"\[(?<name>[A-Z]\w+)\s*[\](,]|\.(?<name>[A-Za-z_]\w*)\s*\(|\b(?<name>__[a-z]\w*)")]
+        private static partial Regex CodeNamePattern();
+
+        [GeneratedRegex(@"(?<!`)`(?<code>[^`\n]+)`(?!`)")]
+        private static partial Regex InlineCodePattern();
+
+        // The name an inline code span starts with: [HarmonyArgument] → HarmonyArgument, RemoveAll(...) → RemoveAll, __result → __result.
+        [GeneratedRegex(@"^\[?(?<name>[A-Za-z_]\w+)")]
+        private static partial Regex InlineNamePattern();
+
+        [GeneratedRegex(@"^Little Handy's report \(0 tool calls")]
+        private static partial Regex ZeroToolCallsPattern();
     }
 }
