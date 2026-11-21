@@ -476,6 +476,7 @@ public sealed partial class ChatLoop
                     }
 
                     logger.LogInformation("Chat {ConversationId}: Little Handy's fact check passed", conversation.Id);
+                    await EmitAsync(onEvent, new ChatEvent("status", "little handy: facts check out"));
                 }
 
                 var finalAnswer = JoinParts(announcedAction, answer);

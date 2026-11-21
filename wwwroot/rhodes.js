@@ -946,7 +946,9 @@ async function sendMessage(messageText, attachmentsToSend, options) {
                 break;
             case 'tool':
                 // What she wrote before this call was her thinking out loud; it moves into the trail so only the final answer stays visible.
-                if (answer) {
+                // Little Handy's own steps ("handy · …") don't count: his fact check runs after her answer is written,
+                // and moving it then left the message with no answer (the server only says moveToReasoning when she rewrites it).
+                if (answer && !String(chatEvent.toolName || '').startsWith('handy · ')) {
                     addInterimNote(closureMessage, answer.rawText);
                     answer.element.remove();
                     answer = null;

@@ -2,6 +2,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Rhodes.Core.Approvals;
 using Rhodes.Core.Chat;
 
@@ -45,7 +46,11 @@ namespace Rhodes.Core.Tools
                 "- WRONG: your tools show otherwise. Say what is true and where you saw it.\n" +
                 "- UNVERIFIED: you couldn't confirm it either way.\n" +
                 "Check every claim that isn't already covered: search_knowledge first (RimWorld source and Defs, Shapto's repos, .NET docs, lore), then the other tools. " +
-                "Never mark a claim VERIFIED from your own knowledge alone. If every claim is VERIFIED, end your report with the line " + AllClaimsVerifiedMarker + ".",
+                "Never mark a claim VERIFIED from your own knowledge alone.\n" +
+                "Code in the draft counts as claims too: check every type, method, attribute and parameter it uses, and that the call matches a real overload " +
+                "(a method that exists but doesn't take those arguments is WRONG). An attribute or member that the documentation you read doesn't mention is WRONG " +
+                "when the documentation shows a different way to do the same thing, otherwise UNVERIFIED. Quoted error messages and exact output are claims as well.\n" +
+                "Only if every claim is VERIFIED, end your report with the line " + AllClaimsVerifiedMarker + " on its own. Otherwise don't write that word anywhere.",
         };
 
         private const string SystemPrompt =
@@ -146,17 +151,29 @@ namespace Rhodes.Core.Tools
                     {turnEvidence}
                     """;
                 var report = await RunJobAsync(task, "verify", ModeInstructions["verify"], cancellationToken);
-                if (report.StartsWith("Error", StringComparison.Ordinal) || report.Contains(AllClaimsVerifiedMarker, StringComparison.Ordinal))
+                logger.LogInformation("Little Handy's fact-check report:\n{Report}", report.Length > 4000 ? report[..4000] + "\n[report cut short in the log]" : report);
+                if (report.StartsWith("Error", StringComparison.Ordinal))
                 {
+                    logger.LogWarning("Little Handy's fact check failed, so the draft goes out unchecked");
                     return null;
                 }
 
-                return report;
+                return IsCleanPass(report) ? null : report;
             }
             finally
             {
                 jobLock.Release();
             }
+        }
+
+        /// <summary>
+        /// A report passes only when its last line is the marker and it marks nothing WRONG or UNVERIFIED.
+        /// Checking just for the marker let reports through that mentioned it in passing ("so I can't write ALL_CLAIMS_VERIFIED").
+        /// </summary>
+        private static bool IsCleanPass(string report)
+        {
+            var lastLine = report.Split('\n').Select(line => line.Trim().Trim('*', '`', '.', ' ')).LastOrDefault(line => line.Length > 0) ?? "";
+            return lastLine == AllClaimsVerifiedMarker && !Regex.IsMatch(report, @"\b(WRONG|UNVERIFIED)\b");
         }
 
         private async Task<string> RunJobAsync(string task, string mode, string modeInstruction, CancellationToken cancellationToken)
