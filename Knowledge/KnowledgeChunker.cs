@@ -44,7 +44,7 @@ public static partial class KnowledgeChunker
 
         if (string.Equals(extension, ".xml", StringComparison.OrdinalIgnoreCase))
         {
-            return SplitXmlDefs(fileName, text, lines) ?? SplitIntoWindows(Path.GetFileName(fileName), lines);
+            return SplitXmlDefs(fileName, text, lines) ?? SplitDotNetApiDocs(text, lines) ?? SplitIntoWindows(Path.GetFileName(fileName), lines);
         }
 
         return SplitIntoWindows(BuildCodeTitle(fileName, lines), lines);
@@ -120,8 +120,8 @@ public static partial class KnowledgeChunker
         for (var lineIndex = 0; lineIndex <= lines.Length; lineIndex++)
         {
             var isEnd = lineIndex == lines.Length;
-            var headingMatch = isEnd ? null : MarkdownHeadingPattern().Match(lines[lineIndex]);
-            if (!isEnd && !headingMatch!.Success)
+            var headingTitle = isEnd ? null : FindHeadingTitle(lines, lineIndex);
+            if (!isEnd && headingTitle is null)
             {
                 continue;
             }
@@ -133,12 +133,69 @@ public static partial class KnowledgeChunker
 
             if (!isEnd)
             {
-                sectionTitle = headingMatch!.Groups["title"].Value.Trim();
+                sectionTitle = headingTitle!;
                 sectionStartIndex = lineIndex;
             }
         }
 
         return chunks;
+    }
+
+    /// <summary>
+    /// The title when a section starts at this line, otherwise null. Three kinds:
+    /// a Markdown heading ("## Title"); a reStructuredText heading (a line underlined with =, -, ~ and the like, as in the Godot docs);
+    /// and a Godot class-reference anchor (".. _class_Node_method_add_child:"), so every method, property and signal gets its own chunk
+    /// titled with its signature ("Node.add_child (method) — void add_child(node: Node, …)").
+    /// </summary>
+    private static string? FindHeadingTitle(string[] lines, int lineIndex)
+    {
+        var line = lines[lineIndex];
+        var markdownMatch = MarkdownHeadingPattern().Match(line);
+        if (markdownMatch.Success)
+        {
+            return markdownMatch.Groups["title"].Value.Trim();
+        }
+
+        var anchorMatch = GodotReferenceAnchorPattern().Match(line);
+        if (anchorMatch.Success)
+        {
+            var memberTitle = $"{anchorMatch.Groups["class"].Value}.{anchorMatch.Groups["name"].Value} ({anchorMatch.Groups["kind"].Value.Replace('_', ' ')})";
+            var signatureLine = lines
+                .Skip(lineIndex + 1)
+                .Take(8)
+                .FirstOrDefault(candidate => candidate.Trim().Length > 0 && !candidate.TrimStart().StartsWith("..", StringComparison.Ordinal));
+            return signatureLine is null ? memberTitle : $"{memberTitle} — {CleanReStructuredText(signatureLine)}";
+        }
+
+        var trimmedLine = line.Trim();
+        if (lineIndex + 1 < lines.Length && trimmedLine.Length > 0 && !IsReStructuredTextUnderline(trimmedLine) && !trimmedLine.StartsWith("..", StringComparison.Ordinal))
+        {
+            var nextLine = lines[lineIndex + 1].Trim();
+            if (IsReStructuredTextUnderline(nextLine) && nextLine.Length >= trimmedLine.Length)
+            {
+                return trimmedLine;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsReStructuredTextUnderline(string trimmedLine)
+    {
+        return trimmedLine.Length >= 3 && "=-~^*+#\"'`:._".Contains(trimmedLine[0]) && trimmedLine.All(character => character == trimmedLine[0]);
+    }
+
+    /// <summary>
+    /// Godot signature lines without the markup: ":ref:`Node&lt;class_Node&gt;`" becomes "Node", |void| becomes void,
+    /// and the link icons, bold marks and escaped spaces go.
+    /// </summary>
+    private static string CleanReStructuredText(string signatureLine)
+    {
+        var cleanedText = ReferenceRolePattern().Replace(signatureLine, match => match.Groups["text"].Value);
+        cleanedText = cleanedText.Replace("\\ ", "").Replace("**", "").Replace("``", "").Replace("🔗", "").Replace("|", "");
+        cleanedText = Regex.Replace(cleanedText, @"\\(.)", "$1");
+        cleanedText = Regex.Replace(cleanedText, @"\s+", " ").Trim();
+        return cleanedText.Length > 160 ? cleanedText[..160] + "…" : cleanedText;
     }
 
     /// <summary>
@@ -243,6 +300,51 @@ public static partial class KnowledgeChunker
     }
 
     /// <summary>
+    /// .NET API reference files (dotnet/dotnet-api-docs, one &lt;Type&gt; per file): one chunk for the type's overview and one per member,
+    /// titled with the member's C# signature ("List&lt;T&gt;.RemoveRange — public void RemoveRange (int index, int count);"),
+    /// so a search for a method finds each real overload and its exact parameters.
+    /// Returns null for any other XML.
+    /// </summary>
+    private static List<KnowledgeChunk>? SplitDotNetApiDocs(string text, string[] lines)
+    {
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(text, LoadOptions.SetLineInfo);
+        }
+        catch (XmlException)
+        {
+            return null;
+        }
+
+        var typeElement = document.Root;
+        var memberElements = typeElement?.Element("Members")?.Elements("Member").ToList() ?? [];
+        if (typeElement is null || typeElement.Name.LocalName != "Type" || memberElements.Count == 0)
+        {
+            return null;
+        }
+
+        var typeName = typeElement.Attribute("Name")?.Value ?? "type";
+        var chunks = new List<KnowledgeChunk>();
+        var firstMemberLine = ((IXmlLineInfo)memberElements[0]).LineNumber;
+        AddSection(chunks, $"{typeName} — type overview ({typeElement.Attribute("FullName")?.Value ?? typeName})", lines, 0, firstMemberLine - 2);
+
+        var membersClosingLine = Array.FindIndex(lines, firstMemberLine - 1, line => line.TrimStart().StartsWith("</Members>", StringComparison.Ordinal)) + 1;
+        for (var memberIndex = 0; memberIndex < memberElements.Count; memberIndex++)
+        {
+            var memberElement = memberElements[memberIndex];
+            var startLine = ((IXmlLineInfo)memberElement).LineNumber;
+            var endLine = memberIndex + 1 < memberElements.Count ? ((IXmlLineInfo)memberElements[memberIndex + 1]).LineNumber - 1 : (membersClosingLine > 0 ? membersClosingLine - 1 : lines.Length);
+            var csharpSignature = memberElement.Elements("MemberSignature").FirstOrDefault(signature => signature.Attribute("Language")?.Value == "C#")?.Attribute("Value")?.Value;
+            var memberName = memberElement.Attribute("MemberName")?.Value ?? "member";
+            var title = csharpSignature is null ? $"{typeName}.{memberName}" : $"{typeName}.{memberName} — {csharpSignature}";
+            AddSection(chunks, title, lines, startLine - 1, Math.Max(startLine, endLine) - 1);
+        }
+
+        return chunks;
+    }
+
+    /// <summary>
     /// The 1-based line of the root's closing tag (the last non-blank line), so the last Def doesn't swallow it.
     /// </summary>
     private static int FindRootClosingLine(string[] lines)
@@ -260,6 +362,12 @@ public static partial class KnowledgeChunker
 
     [GeneratedRegex(@"^#{1,6}\s+(?<title>.+)$")]
     private static partial Regex MarkdownHeadingPattern();
+
+    [GeneratedRegex(@"^\.\. _class_(?<class>@?[A-Za-z0-9]+)_(?<kind>method|property|signal|constant|enum|annotation|constructor|operator|theme_item)_(?<name>.+):\s*$")]
+    private static partial Regex GodotReferenceAnchorPattern();
+
+    [GeneratedRegex(@":ref:`(?<text>[^`<]*?)\s*(<[^>]*>)?`")]
+    private static partial Regex ReferenceRolePattern();
 
     [GeneratedRegex(@"\b(?<kind>class|struct|interface|enum|record)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)")]
     private static partial Regex TypeDeclarationPattern();

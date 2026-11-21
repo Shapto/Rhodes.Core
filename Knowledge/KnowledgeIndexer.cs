@@ -28,8 +28,9 @@ public sealed class KnowledgeIndexer
 
     /// <summary>
     /// One full pass over the Knowledge folder. Safe to run again at any time; unchanged files are skipped.
+    /// With logWhenUnchanged false (the periodic rescans) it only logs when something was added, changed or removed.
     /// </summary>
-    public void IndexAll(CancellationToken cancellationToken)
+    public void IndexAll(CancellationToken cancellationToken, bool logWhenUnchanged = true)
     {
         var stopwatch = Stopwatch.StartNew();
         var knowledgeFolder = knowledgeDatabase.KnowledgeFolder;
@@ -91,6 +92,11 @@ public sealed class KnowledgeIndexer
             knowledgeDatabase.RemoveFile(removedPath);
         }
 
+        if (!logWhenUnchanged && indexedCount + notTextCount + failedCount + removedPaths.Count == 0)
+        {
+            return;
+        }
+
         var (fileCount, chunkCount) = knowledgeDatabase.CountIndexed();
         logger.LogInformation(
             "Knowledge: {Indexed} files indexed, {Removed} removed, {Skipped} too big, {NotText} not text, {Failed} failed in {Seconds:0.0} s; library holds {Files} files in {Chunks} chunks ({Folder})",
@@ -148,13 +154,17 @@ public sealed class KnowledgeIndexer
 }
 
 /// <summary>
-/// Runs one indexing pass in the background at startup, so a big first index (the whole decompiled RimWorld source)
-/// never holds up the core starting. Search works meanwhile on whatever is already indexed.
+/// Indexes the Knowledge folder in the background: once at startup (so a big first index never holds up the core starting),
+/// then again every minute and whenever something asks for it (Fill-Knowledge.sh does, through POST /knowledge/reindex).
+/// A rescan only reads files that are new or changed, so files dropped into Knowledge are searchable within a minute, no restart needed.
 /// </summary>
 public sealed class KnowledgeIndexService : BackgroundService
 {
+    private static readonly TimeSpan RescanInterval = TimeSpan.FromMinutes(1);
+
     private readonly KnowledgeIndexer knowledgeIndexer;
     private readonly ILogger<KnowledgeIndexService> logger;
+    private readonly SemaphoreSlim reindexSignal = new(0, 1);
 
     public KnowledgeIndexService(KnowledgeIndexer knowledgeIndexer, ILogger<KnowledgeIndexService> logger)
     {
@@ -162,22 +172,50 @@ public sealed class KnowledgeIndexService : BackgroundService
         this.logger = logger;
     }
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    /// <summary>
+    /// Starts a rescan now instead of at the next minute. Several requests while one is waiting count as one.
+    /// </summary>
+    public void RequestReindex()
     {
-        return Task.Run(() =>
+        try
         {
+            reindexSignal.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            // A rescan is already requested.
+        }
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var firstPass = true;
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            var logThisPass = firstPass;
             try
             {
-                knowledgeIndexer.IndexAll(stoppingToken);
+                await Task.Run(() => knowledgeIndexer.IndexAll(stoppingToken, logThisPass), stoppingToken);
             }
             catch (OperationCanceledException)
             {
                 // The core is shutting down; the next start carries on where this pass stopped.
+                return;
             }
             catch (Exception exception)
             {
                 logger.LogError(exception, "Knowledge: indexing failed");
             }
-        }, stoppingToken);
+
+            firstPass = false;
+            try
+            {
+                await reindexSignal.WaitAsync(RescanInterval, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
     }
 }

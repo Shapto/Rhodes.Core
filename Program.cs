@@ -64,7 +64,8 @@ builder.Services.AddSingleton<ICoreTool, LittleHandyTool>();
 var knowledgeFolder = builder.Configuration["Knowledge:Path"] ?? Path.Combine(Path.GetDirectoryName(dataFolder)!, "Knowledge");
 builder.Services.AddSingleton(new Rhodes.Core.Knowledge.KnowledgeDatabase(Path.Combine(dataFolder, "knowledge.db"), knowledgeFolder));
 builder.Services.AddSingleton<Rhodes.Core.Knowledge.KnowledgeIndexer>();
-builder.Services.AddHostedService<Rhodes.Core.Knowledge.KnowledgeIndexService>();
+builder.Services.AddSingleton<Rhodes.Core.Knowledge.KnowledgeIndexService>();
+builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<Rhodes.Core.Knowledge.KnowledgeIndexService>());
 builder.Services.AddSingleton<ICoreTool, SearchKnowledgeTool>();
 builder.Services.AddSingleton<ICoreTool, ReadKnowledgeTool>();
 
@@ -255,6 +256,11 @@ app.MapPost("/models/unload", async (ModelChoice modelChoice, ModelManager model
 app.MapGet("/settings", (Rhodes.Core.Settings.CoreSettings coreSettings) => coreSettings.List());
 app.MapPost("/settings", (SettingChange settingChange, Rhodes.Core.Settings.CoreSettings coreSettings) =>
     coreSettings.Save(settingChange.Key, settingChange.Value) is { } errorText ? Results.BadRequest(errorText) : Results.Ok(coreSettings.List()));
+app.MapPost("/knowledge/reindex", (Rhodes.Core.Knowledge.KnowledgeIndexService knowledgeIndexService) =>
+{
+    knowledgeIndexService.RequestReindex();
+    return Results.Ok();
+});
 app.MapPost("/core/restart", (IHostApplicationLifetime applicationLifetime) =>
     Rhodes.Core.Settings.CoreSettings.StartRestart(applicationLifetime) is { } errorText ? Results.BadRequest(errorText) : Results.Ok());
 
