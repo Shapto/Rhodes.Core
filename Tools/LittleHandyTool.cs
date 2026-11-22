@@ -46,7 +46,12 @@ namespace Rhodes.Core.Tools
         {
             ["dig"] = "Find the specific thing asked for. Quote the exact lines, messages or passages that answer it, with where they are.",
             ["overview"] = "Map it: the structure, the main parts and how they connect, where things start, anything that stands out. Read enough to be accurate, not every file.",
-            ["review"] = "Review the code named in the task: bugs, risky spots, missing error handling, confusing parts. Check that every API, method and setting it uses really exists (search_knowledge, read_file). Point at exact files and lines. Keep real problems separate from style.",
+            ["review"] =
+                "Review the code named in the task: bugs, risky spots, missing error handling, confusing parts. Check that every API, method and setting it uses really exists (search_knowledge, read_file). Point at exact files and lines. Keep real problems separate from style.\n" +
+                "Count these as real problems, not style:\n" +
+                "- Code that only handles the example it was tested on: compare it with everything the task asked for (every rule and case), not just the sample input and output.\n" +
+                "- Parsing or formatting numbers or dates without CultureInfo.InvariantCulture (double.Parse, decimal.TryParse, ToString(\"N0\") and the like): Shapto's PC uses Lithuanian regional settings, where 1.5 is written 1,5, so such code breaks there.\n" +
+                "Then go through Shapto's code style point by point, and list every abbreviated name you find (doc, d, kvp, val, dict, mv, e, ex and the like), with its line.",
             ["verify"] =
                 "Check the facts in Closure's draft answer before Shapto sees it. List every factual claim in it: about Shapto's code, files, setup or plans, and about APIs, " +
                 "class and method names, file paths, settings, versions and how things behave. Skip opinions, advice, jokes and style. Mark each claim:\n" +

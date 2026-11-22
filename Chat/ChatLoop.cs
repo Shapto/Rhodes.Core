@@ -20,7 +20,7 @@ namespace Rhodes.Core.Chat;
 public sealed partial class ChatLoop
 {
     private const int MaximumToolSteps = 20;
-    private const int MaximumCodeToolSteps = 40;
+    private const int MaximumCodeToolSteps = 50;
 
     // Room for CodeThinkingBudget (8000 tokens is about 32,000 characters) plus the budget message.
     private const int CodeThinkingCharacterLimit = 36000;
@@ -41,6 +41,8 @@ public sealed partial class ChatLoop
     private const string ContextFullNote = "[Rhodes: the chat's context is nearly full, so no more tool calls this message. Answer now with what you found, and say plainly what you didn't get to; the chat gets compacted after your answer and Shapto can tell you to continue.]";
     private const string UnfinishedActionNudge = "[Rhodes: your reply ends by saying you'll do something, but you didn't call a tool. If you meant to, call it now. If not, just answer without promising it.]";
     private const string EmptyAnswerNudge = "[Rhodes: you stopped without answering. Carry on with what you were doing (call the next tool), or tell Shapto what you found and what's still open.]";
+    private const string WholeFileRewriteNote = "[Rhodes: that replaced a whole file that already existed. For changes to an existing file, use edit_file with just the lines that change: rewriting the whole file costs a lot of context every time.]";
+
     private const string UnverifiedCodeNudge = "[Rhodes: you changed code this turn but haven't built or run it since your last change. Build or test it now with run_command, check every behavior Shapto asked for (error cases included), and fix what fails. If it can't be run here, say plainly in your answer that it's untested.]";
 
     private const string ReviewNudgeTemplate = "[Rhodes: before you answer, have Little Handy review what you changed: call little_handy with mode \"review\" and a task naming these files and what Shapto asked for: {0}. Check his findings, fix the real problems, build again, then answer.]";
@@ -377,6 +379,11 @@ public sealed partial class ChatLoop
                         await EmitAsync(onEvent, new ChatEvent("status", $"running {GetString(toolCall!["function"]?["name"])}…"));
                         var isNewCall = completedToolCalls.Add(BuildToolCallKey(toolCall!));
                         var toolStep = isNewCall ? await RunToolCallAsync(toolCall!, cancellationToken) : BuildRepeatedCallStep(toolCall!);
+                        if (toolStep.ToolName == "write_file" && toolStep.Result.StartsWith("Replaced", StringComparison.Ordinal))
+                        {
+                            // Rewriting a whole existing file costs thousands of tokens of context each time; she did it four times in one task.
+                            toolStep = toolStep with { Result = toolStep.Result + "\n" + WholeFileRewriteNote };
+                        }
 
                         // A real change to the workspace makes earlier builds and runs worth repeating.
                         var changedWorkspace = isNewCall && toolStep.ToolName is "write_file" or "edit_file" or "delete_file" && !toolStep.Result.StartsWith("Error", StringComparison.Ordinal);
