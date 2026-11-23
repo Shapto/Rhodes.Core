@@ -270,7 +270,14 @@ public sealed partial class KnowledgeDatabase : IDisposable
             .Distinct()
             .Take(MaximumQueryTerms)
             .ToList();
-        return queryWords.Count == 0 ? null : string.Join(" OR ", queryWords.Select(word => "\"" + word + "\""));
+        // A dotted name ("AccessTools.Method", "Mathf.Clamp") is also searched as a phrase, so chunks where the two parts
+        // sit together (that member's own docs) rank above chunks that merely mention both words somewhere.
+        var dottedNamePhrases = DottedNamePattern().Matches(query)
+            .Select(nameMatch => string.Join(' ', nameMatch.Value.ToLowerInvariant().Split('.')))
+            .Distinct()
+            .Select(phrase => "\"" + phrase + "\"");
+        var searchTerms = dottedNamePhrases.Concat(queryWords.Select(word => "\"" + word + "\"")).ToList();
+        return queryWords.Count == 0 ? null : string.Join(" OR ", searchTerms);
     }
 
     private void Execute(SqliteTransaction? transaction, string commandText, params (string Name, object Value)[] parameters)
@@ -299,4 +306,7 @@ public sealed partial class KnowledgeDatabase : IDisposable
 
     [GeneratedRegex(@"[\p{L}\p{N}_]+")]
     private static partial Regex QueryWordPattern();
+
+    [GeneratedRegex(@"[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)+")]
+    private static partial Regex DottedNamePattern();
 }

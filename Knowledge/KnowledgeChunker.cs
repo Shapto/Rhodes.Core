@@ -44,7 +44,7 @@ public static partial class KnowledgeChunker
 
         if (string.Equals(extension, ".xml", StringComparison.OrdinalIgnoreCase))
         {
-            return SplitXmlDefs(fileName, text, lines) ?? SplitDotNetApiDocs(text, lines) ?? SplitIntoWindows(Path.GetFileName(fileName), lines);
+            return SplitXmlDefs(fileName, text, lines) ?? SplitDotNetApiDocs(text, lines) ?? SplitCompilerXmlDocs(text, lines) ?? SplitIntoWindows(Path.GetFileName(fileName), lines);
         }
 
         return SplitIntoWindows(BuildCodeTitle(fileName, lines), lines);
@@ -345,6 +345,92 @@ public static partial class KnowledgeChunker
     }
 
     /// <summary>
+    /// The XML documentation a compiler writes next to a library (0Harmony.xml, shipped in NuGet packages):
+    /// &lt;doc&gt;&lt;members&gt;&lt;member name="M:HarmonyLib.AccessTools.Method(System.Type,System.String,...)"&gt;.
+    /// One chunk per member, titled in readable form ("AccessTools.Method(Type, String, Type[], Type[]) — HarmonyLib"),
+    /// so a search for a method lands on each real overload instead of a 60-line window somewhere in a 4,000-line file.
+    /// Returns null for any other XML.
+    /// </summary>
+    private static List<KnowledgeChunk>? SplitCompilerXmlDocs(string text, string[] lines)
+    {
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(text, LoadOptions.SetLineInfo);
+        }
+        catch (XmlException)
+        {
+            return null;
+        }
+
+        var memberElements = document.Root?.Element("members")?.Elements("member").ToList() ?? [];
+        if (document.Root?.Name.LocalName != "doc" || memberElements.Count == 0)
+        {
+            return null;
+        }
+
+        var assemblyName = document.Root.Element("assembly")?.Element("name")?.Value.Trim();
+        var chunks = new List<KnowledgeChunk>();
+        var firstMemberLine = ((IXmlLineInfo)memberElements[0]).LineNumber;
+        if (firstMemberLine > 1)
+        {
+            AddSection(chunks, $"{assemblyName ?? "assembly"} — API documentation", lines, 0, firstMemberLine - 2);
+        }
+
+        var membersClosingLine = Array.FindLastIndex(lines, line => line.TrimStart().StartsWith("</members>", StringComparison.Ordinal)) + 1;
+        for (var memberIndex = 0; memberIndex < memberElements.Count; memberIndex++)
+        {
+            var startLine = ((IXmlLineInfo)memberElements[memberIndex]).LineNumber;
+            var endLine = memberIndex + 1 < memberElements.Count ? ((IXmlLineInfo)memberElements[memberIndex + 1]).LineNumber - 1 : (membersClosingLine > 0 ? membersClosingLine - 1 : lines.Length);
+            var title = DescribeDocumentationMember(memberElements[memberIndex].Attribute("name")?.Value ?? "", assemblyName);
+            AddSection(chunks, title, lines, startLine - 1, Math.Max(startLine, endLine) - 1);
+        }
+
+        return chunks;
+    }
+
+    /// <summary>
+    /// "M:HarmonyLib.AccessTools.Method(System.Type,System.String)" becomes "AccessTools.Method(Type, String) — HarmonyLib",
+    /// "P:HarmonyLib.Traverse.Value" becomes "Traverse.Value — property, HarmonyLib".
+    /// </summary>
+    private static string DescribeDocumentationMember(string memberIdentifier, string? assemblyName)
+    {
+        if (memberIdentifier.Length < 3 || memberIdentifier[1] != ':')
+        {
+            return memberIdentifier.Length > 0 ? memberIdentifier : "member";
+        }
+
+        var memberKind = memberIdentifier[0] switch
+        {
+            'T' => "type",
+            'M' => "method",
+            'P' => "property",
+            'F' => "field",
+            'E' => "event",
+            _ => "member",
+        };
+        var fullName = memberIdentifier[2..];
+        var parameterStart = fullName.IndexOf('(');
+        var qualifiedName = parameterStart >= 0 ? fullName[..parameterStart] : fullName;
+        var parameterText = parameterStart >= 0 ? fullName[parameterStart..] : "";
+
+        var nameParts = qualifiedName.Split('.');
+        var namespaceName = string.Join('.', nameParts[..^(memberKind == "type" ? 1 : Math.Min(2, nameParts.Length))]);
+        var shortName = string.Join('.', nameParts[^(memberKind == "type" ? 1 : Math.Min(2, nameParts.Length))..]);
+        if (shortName.EndsWith(".#ctor", StringComparison.Ordinal))
+        {
+            shortName = shortName[..^".#ctor".Length] + " constructor";
+            memberKind = "constructor";
+        }
+
+        var readableParameters = parameterText.Length == 0 ? "" : QualifierPattern().Replace(parameterText.Replace(",", ", ").Replace('{', '<').Replace('}', '>'), "");
+        // Methods get no kind word: "method" in every title would make each one match a search for "method".
+        var location = namespaceName.Length > 0 ? namespaceName : assemblyName;
+        var details = string.Join(", ", new[] { memberKind == "method" ? null : memberKind, location }.Where(part => !string.IsNullOrEmpty(part)));
+        return details.Length == 0 ? $"{shortName}{readableParameters}" : $"{shortName}{readableParameters} — {details}";
+    }
+
+    /// <summary>
     /// The 1-based line of the root's closing tag (the last non-blank line), so the last Def doesn't swallow it.
     /// </summary>
     private static int FindRootClosingLine(string[] lines)
@@ -359,6 +445,9 @@ public static partial class KnowledgeChunker
 
         return lines.Length;
     }
+
+    [GeneratedRegex(@"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)+(?=[A-Za-z_])")]
+    private static partial Regex QualifierPattern();
 
     [GeneratedRegex(@"^#{1,6}\s+(?<title>.+)$")]
     private static partial Regex MarkdownHeadingPattern();

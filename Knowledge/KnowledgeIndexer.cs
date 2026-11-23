@@ -17,6 +17,12 @@ public sealed class KnowledgeIndexer
 
     private static readonly HashSet<string> SkippedFolderNames = new(StringComparer.OrdinalIgnoreCase) { "bin", "obj", ".git", ".vs", ".idea", "node_modules" };
 
+    /// <summary>
+    /// Old-style NuGet folders committed into repositories (packages/Lib.Harmony.2.4.2/lib/net9.0/0Harmony.xml):
+    /// only their API documentation is indexed, from one target framework per package and one copy per package across the library.
+    /// </summary>
+    private const string NuGetPackagesFolderName = "packages";
+
     private readonly KnowledgeDatabase knowledgeDatabase;
     private readonly ILogger<KnowledgeIndexer> logger;
 
@@ -117,6 +123,7 @@ public sealed class KnowledgeIndexer
     /// </summary>
     private static IEnumerable<string> EnumerateKnowledgeFiles(string rootFolder)
     {
+        var seenPackageNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var foldersToVisit = new Stack<string>();
         foldersToVisit.Push(rootFolder);
         while (foldersToVisit.Count > 0)
@@ -136,7 +143,15 @@ public sealed class KnowledgeIndexer
 
             foreach (var subfolder in subfolders)
             {
-                if (!SkippedFolderNames.Contains(Path.GetFileName(subfolder)))
+                var subfolderName = Path.GetFileName(subfolder);
+                if (string.Equals(subfolderName, NuGetPackagesFolderName, StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var documentationFile in EnumeratePackageDocumentation(subfolder, seenPackageNames))
+                    {
+                        yield return documentationFile;
+                    }
+                }
+                else if (!SkippedFolderNames.Contains(subfolderName))
                 {
                     foldersToVisit.Push(subfolder);
                 }
@@ -150,6 +165,79 @@ public sealed class KnowledgeIndexer
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// The .xml documentation files in packages/&lt;package&gt;/lib/&lt;framework&gt;/, from the newest .NET framework folder only,
+    /// and nothing from a package (name and version) already seen in another repository. The DLLs and everything else are left out.
+    /// </summary>
+    private static IEnumerable<string> EnumeratePackageDocumentation(string packagesFolder, HashSet<string> seenPackageNames)
+    {
+        List<string> packageFolders;
+        try
+        {
+            packageFolders = Directory.EnumerateDirectories(packagesFolder).ToList();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            yield break;
+        }
+
+        foreach (var packageFolder in packageFolders)
+        {
+            var libraryFolder = Path.Combine(packageFolder, "lib");
+            if (!Directory.Exists(libraryFolder) || !seenPackageNames.Add(Path.GetFileName(packageFolder)))
+            {
+                continue;
+            }
+
+            List<string> documentationFiles;
+            try
+            {
+                var frameworkFolder = Directory.EnumerateDirectories(libraryFolder)
+                    .OrderByDescending(folder => RankTargetFramework(Path.GetFileName(folder)))
+                    .FirstOrDefault();
+                documentationFiles = Directory.EnumerateFiles(frameworkFolder ?? libraryFolder, "*.xml").ToList();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            foreach (var documentationFile in documentationFiles)
+            {
+                yield return documentationFile;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Higher for newer frameworks: net10.0 &gt; net9.0 &gt; … &gt; netstandard2.1 &gt; netcoreapp3.1 &gt; net48 &gt; net35.
+    /// </summary>
+    private static double RankTargetFramework(string frameworkName)
+    {
+        var versionMatch = System.Text.RegularExpressions.Regex.Match(frameworkName, @"^(?<family>net|netstandard|netcoreapp)(?<version>[0-9.]+)");
+        if (!versionMatch.Success)
+        {
+            return 0;
+        }
+
+        var versionText = versionMatch.Groups["version"].Value;
+        var family = versionMatch.Groups["family"].Value;
+        if (family == "net" && !versionText.Contains('.'))
+        {
+            // net48, net472, net35: the old .NET Framework, written without dots.
+            var frameworkVersionText = versionText.Length > 1 ? $"{versionText[0]}.{versionText[1..]}" : versionText;
+            return 100 + double.Parse(frameworkVersionText, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        var version = double.TryParse(versionText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedVersion) ? parsedVersion : 0;
+        return family switch
+        {
+            "net" => 1000 + version,
+            "netstandard" => 500 + version,
+            _ => 300 + version,
+        };
     }
 }
 
