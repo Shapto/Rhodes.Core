@@ -54,6 +54,9 @@ public sealed partial class ConversationStore : IDisposable
         AddColumnIfMissing("title_is_manual", "INTEGER NOT NULL DEFAULT 0");
         AddColumnIfMissing("memory_pass_through", "INTEGER NOT NULL DEFAULT 0");
 
+        // Chats from before deferred titling count as already titled, so the default is 0.
+        AddColumnIfMissing("title_pending", "INTEGER NOT NULL DEFAULT 0");
+
         // The search index holds what Shapto and Closure said (not tool results or thinking), one row per message.
         // Chats from before the index existed are indexed once, the first time the core starts with it.
         using var indexExistsCommand = CreateCommand(null, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'chat_search';");
@@ -190,10 +193,11 @@ public sealed partial class ConversationStore : IDisposable
         var conversation = new Conversation(Guid.NewGuid().ToString("N"))
         {
             CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(nowMilliseconds).ToLocalTime(),
+            TitlePending = true,
         };
         lock (databaseLock)
         {
-            Execute(null, "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ($id, '', $now, $now);",
+            Execute(null, "INSERT INTO conversations (id, title, created_at, updated_at, title_pending) VALUES ($id, '', $now, $now, 1);",
                 ("$id", conversation.Id),
                 ("$now", nowMilliseconds));
         }
@@ -205,7 +209,7 @@ public sealed partial class ConversationStore : IDisposable
     {
         lock (databaseLock)
         {
-            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at, summary, summary_covers_through, tool_results_collapsed_before, created_at, title_is_manual, memory_pass_through FROM conversations WHERE id = $id;", ("$id", conversationId));
+            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at, summary, summary_covers_through, tool_results_collapsed_before, created_at, title_is_manual, memory_pass_through, title_pending FROM conversations WHERE id = $id;", ("$id", conversationId));
             using var conversationReader = conversationCommand.ExecuteReader();
             if (!conversationReader.Read())
             {
@@ -222,6 +226,7 @@ public sealed partial class ConversationStore : IDisposable
                 CreatedAt = DateTimeOffset.FromUnixTimeMilliseconds(conversationReader.GetInt64(5)).ToLocalTime(),
                 TitleIsManual = conversationReader.GetInt64(6) != 0,
                 MemoryPassThrough = conversationReader.GetInt32(7),
+                TitlePending = conversationReader.GetInt64(8) != 0,
             };
 
             using var messagesCommand = CreateCommand(null, "SELECT message_json FROM conversation_messages WHERE conversation_id = $id ORDER BY position;", ("$id", conversationId));
@@ -315,9 +320,10 @@ public sealed partial class ConversationStore : IDisposable
     {
         lock (databaseLock)
         {
-            Execute(null, "UPDATE conversations SET title = $title, title_is_manual = $titleIsManual WHERE id = $id;",
+            Execute(null, "UPDATE conversations SET title = $title, title_is_manual = $titleIsManual, title_pending = $titlePending WHERE id = $id;",
                 ("$title", conversation.Title),
                 ("$titleIsManual", conversation.TitleIsManual ? 1 : 0),
+                ("$titlePending", conversation.TitlePending ? 1 : 0),
                 ("$id", conversation.Id));
         }
     }

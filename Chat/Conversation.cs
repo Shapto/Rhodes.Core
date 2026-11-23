@@ -21,6 +21,12 @@ public sealed class Conversation
     /// </summary>
     public bool TitleIsManual { get; set; }
 
+    /// <summary>
+    /// True for a new chat until the model has named it. ChatTitlingService does that once Shapto goes quiet,
+    /// so a title request never wipes the cache in the middle of a conversation.
+    /// </summary>
+    public bool TitlePending { get; set; }
+
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.Now;
 
     public List<JsonObject> Messages { get; } = [];

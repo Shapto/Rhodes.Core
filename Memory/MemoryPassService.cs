@@ -21,11 +21,12 @@ namespace Rhodes.Core.Memory
         private readonly ModelStatusMonitor modelStatusMonitor;
         private readonly HeartbeatService heartbeatService;
         private readonly HeartbeatRunner heartbeatRunner;
+        private readonly ChatTitlingService chatTitlingService;
         private readonly ILogger<MemoryPassService> logger;
         private readonly TimeSpan quietTime;
         private readonly bool enabled;
 
-        public MemoryPassService(MemoryExtractor memoryExtractor, ConversationStore conversationStore, ConversationManager conversationManager, ActivityTracker activityTracker, ModelStatusMonitor modelStatusMonitor, HeartbeatService heartbeatService, HeartbeatRunner heartbeatRunner, IConfiguration configuration, ILogger<MemoryPassService> logger)
+        public MemoryPassService(MemoryExtractor memoryExtractor, ConversationStore conversationStore, ConversationManager conversationManager, ActivityTracker activityTracker, ModelStatusMonitor modelStatusMonitor, HeartbeatService heartbeatService, HeartbeatRunner heartbeatRunner, ChatTitlingService chatTitlingService, IConfiguration configuration, ILogger<MemoryPassService> logger)
         {
             this.memoryExtractor = memoryExtractor;
             this.conversationStore = conversationStore;
@@ -34,6 +35,7 @@ namespace Rhodes.Core.Memory
             this.modelStatusMonitor = modelStatusMonitor;
             this.heartbeatService = heartbeatService;
             this.heartbeatRunner = heartbeatRunner;
+            this.chatTitlingService = chatTitlingService;
             this.logger = logger;
             quietTime = TimeSpan.FromMinutes(configuration.GetValue("Memory:PassAfterQuietMinutes", 5));
             enabled = configuration.GetValue("Memory:BackgroundPass", true);
@@ -67,7 +69,7 @@ namespace Rhodes.Core.Memory
         private async Task RunOnePassAsync(CancellationToken stoppingToken)
         {
             var isQuiet = DateTimeOffset.Now - activityTracker.LastActivityAt >= quietTime && !activityTracker.IsChatRunning;
-            if (!isQuiet || heartbeatService.GetStatus().Running || modelStatusMonitor.Current.State != ModelStates.Online)
+            if (!isQuiet || heartbeatService.GetStatus().Running || chatTitlingService.IsRunning || modelStatusMonitor.Current.State != ModelStates.Online)
             {
                 return;
             }

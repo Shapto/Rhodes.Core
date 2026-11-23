@@ -180,6 +180,10 @@ builder.Services.AddSingleton(serviceProvider => new ConversationCompactor(
 // Memory upkeep: filing durable facts after a chat goes quiet (and before compaction), and Closure's cleanup proposals.
 builder.Services.AddSingleton<MemoryExtractor>();
 builder.Services.AddHostedService<MemoryPassService>();
+
+// New chats get their model title once Shapto goes quiet, not mid-conversation (see ChatTitlingService).
+builder.Services.AddSingleton<ChatTitlingService>();
+builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<ChatTitlingService>());
 builder.Services.AddSingleton(serviceProvider => new MemoryReviewer(
     Path.Combine(Path.GetDirectoryName(databasePath)!, "rhodes.db"),
     serviceProvider.GetRequiredService<MemoryStore>(),
@@ -288,7 +292,7 @@ app.MapGet("/memory/find", (string text, MemoryStore store) => store.FindContain
 var webJsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 app.MapPost("/memory/{memoryId}/delete", (string memoryId, MemoryStore store) => store.Delete(memoryId) ? Results.Ok() : Results.NotFound());
 
-app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, ActivityTracker activityTracker, CancellationToken cancellationToken) =>
+app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, ActivityTracker activityTracker, CancellationToken cancellationToken) =>
 {
     using var chatActivity = activityTracker.BeginChat();
     var modelStatus = await modelStatusMonitor.GetFreshStatusAsync(cancellationToken);
@@ -304,15 +308,12 @@ app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitl
     }
 
     var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.AttachmentIds ?? [], chatRequest.Client ?? "test console", chatRequest.Thinking ?? "auto", null, cancellationToken);
-    _ = Task.Run(async () =>
-    {
-        await chatTitler.TitleNewChatAsync(conversation, CancellationToken.None);
-        await conversationCompactor.CompactIfNeededAsync(conversation, null, CancellationToken.None);
-    });
+    // The model title comes later, once I'm quiet (ChatTitlingService), so it doesn't wipe the cache mid-chat.
+    _ = Task.Run(async () => await conversationCompactor.CompactIfNeededAsync(conversation, null, CancellationToken.None));
     return Results.Ok(new { conversationId = conversation.Id, turnResult });
 });
 
-app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ChatTitler chatTitler, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, ActivityTracker activityTracker, HttpContext httpContext, CancellationToken cancellationToken) =>
+app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, ActivityTracker activityTracker, HttpContext httpContext, CancellationToken cancellationToken) =>
 {
     using var chatActivity = activityTracker.BeginChat();
     httpContext.Response.ContentType = "text/event-stream";
@@ -368,12 +369,7 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         turnFinished = true;
         await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s", userMessageIndex, replyMessageIndex = conversation.Messages.Count - 1, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation), statistics = turnResult.Statistics, sentAt = DateTimeOffset.Now });
 
-        var newTitle = await chatTitler.TitleNewChatAsync(conversation, CancellationToken.None);
-        if (newTitle is not null)
-        {
-            await TrySendAsync(new { type = "title", text = newTitle });
-        }
-
+        // The model title comes later, once I'm quiet (ChatTitlingService), so it doesn't wipe the cache mid-chat.
         var compacted = await conversationCompactor.CompactIfNeededAsync(conversation, statusText => TrySendAsync(new { type = "status", text = statusText }), CancellationToken.None);
         if (compacted)
         {
@@ -454,6 +450,7 @@ app.MapPost("/chats/{conversationId}/title", (string conversationId, TitleReques
 
     conversation.Title = newTitle.Length > 60 ? newTitle[..60] : newTitle;
     conversation.TitleIsManual = true;
+    conversation.TitlePending = false;
     conversationStore.SaveTitle(conversation);
     return Results.Ok(new { conversation.Title });
 });
