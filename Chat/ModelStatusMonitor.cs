@@ -145,6 +145,10 @@ public sealed class ModelStatusMonitor : BackgroundService
         return (ModelStates.Loading, "loading " + currentEntry.Id);
     }
 
+    /// <summary>
+    /// Asks a plain (non-router) model server whether it's ready: llama-server's /health, or for servers without one
+    /// (RustingStrata only has the OpenAI routes), whether /v1/models answers.
+    /// </summary>
     private async Task<(string State, string Detail)> QueryHealthAsync(CancellationToken cancellationToken)
     {
         try
@@ -155,7 +159,18 @@ public sealed class ModelStatusMonitor : BackgroundService
                 return (ModelStates.Online, "ready");
             }
 
-            return response.StatusCode == HttpStatusCode.ServiceUnavailable ? (ModelStates.Loading, "loading the model") : (ModelStates.Offline, $"health check returned {(int)response.StatusCode}");
+            if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
+            {
+                return (ModelStates.Loading, "loading the model");
+            }
+
+            if (response.StatusCode != HttpStatusCode.NotFound)
+            {
+                return (ModelStates.Offline, $"health check returned {(int)response.StatusCode}");
+            }
+
+            using var modelsResponse = await healthClient.GetAsync("v1/models", cancellationToken);
+            return modelsResponse.IsSuccessStatusCode ? (ModelStates.Online, "ready (no /health; /v1/models answered)") : (ModelStates.Offline, $"no /health, and /v1/models returned {(int)modelsResponse.StatusCode}");
         }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
