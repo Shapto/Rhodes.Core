@@ -32,6 +32,11 @@ const highlightingAvailable = typeof window.hljs !== 'undefined';
 let currentConversationId = readStoredConversationId();
 let thinkingSetting = 'auto';
 let activeTurnController = null;
+// The chat the running turn belongs to (known once the core sends its id), and whether Stop was pressed before that.
+let activeTurnConversationId = null;
+let stopRequestedEarly = false;
+// A chat whose turn is still running on the core after the page came back to it (e.g. from home mid-reply).
+let waitingForTurnConversationId = null;
 let compactionInProgress = false;
 let rerenderAfterTurn = false;
 let modelReady = false;
@@ -708,6 +713,61 @@ async function loadConversation(conversationId) {
     showReplyStatistics(lastStatistics);
     refreshTurnActions();
     scrollToBottom();
+    if (!activeTurnController) watchRunningTurn(conversationId);
+}
+
+// ---------- stopping, and coming back to a reply that's still running ----------
+
+// Leaving the page no longer stops a turn (the core finishes and saves it), so Stop has to tell the core.
+function requestStop(conversationId) {
+    fetch('/chats/' + encodeURIComponent(conversationId) + '/stop', { method: 'POST' }).catch(() => { });
+}
+
+function stopActiveTurn() {
+    if (!activeTurnController) return;
+    if (!activeTurnConversationId) {
+        // The core hasn't said which chat this is yet (a brand-new chat); stop as soon as it does.
+        stopRequestedEarly = true;
+        return;
+    }
+    requestStop(activeTurnConversationId);
+    activeTurnController.abort();
+}
+
+async function isTurnRunning(conversationId) {
+    try {
+        const response = await fetch('/chats/' + encodeURIComponent(conversationId) + '/turn');
+        return response.ok && (await response.json()).running === true;
+    } catch {
+        return false;
+    }
+}
+
+// The page came back to a chat whose reply is still being written on the core: show that, wait, then load the finished reply.
+async function watchRunningTurn(conversationId) {
+    if (waitingForTurnConversationId === conversationId || !(await isTurnRunning(conversationId))) return;
+    if (currentConversationId !== conversationId || activeTurnController) return;
+    waitingForTurnConversationId = conversationId;
+    updateFormState();
+    const closureMessage = createClosureMessage(messagesElement, false);
+    addElement(closureMessage.bodyElement, 'div', 'status', 'still replying… her answer shows up here when she\'s done');
+    const stopWaitingButton = addElement(closureMessage.bodyElement, 'button', 'stop label', '■ STOP');
+    stopWaitingButton.type = 'button';
+    stopWaitingButton.addEventListener('click', () => {
+        stopWaitingButton.disabled = true;
+        requestStop(conversationId);
+    });
+    scrollToBottom();
+
+    while (currentConversationId === conversationId && await isTurnRunning(conversationId)) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    if (waitingForTurnConversationId === conversationId) waitingForTurnConversationId = null;
+    updateFormState();
+    refreshChatList();
+    // A stopped turn is rolled back by the core; give it a moment before showing what it kept.
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if (currentConversationId === conversationId && !activeTurnController) await loadConversation(conversationId);
 }
 
 async function openConversation(conversationId) {
@@ -730,7 +790,7 @@ function updateFormState() {
     const uploadsRunning = pendingAttachments.some(attachment => attachment.status === 'uploading');
     messageInput.disabled = compactionInProgress;
     attachButton.disabled = compactionInProgress || editingLastMessage;
-    sendButton.disabled = compactionInProgress || !modelReady || activeTurnController !== null || uploadsRunning;
+    sendButton.disabled = compactionInProgress || !modelReady || activeTurnController !== null || waitingForTurnConversationId !== null || uploadsRunning;
     sendButton.textContent = editingLastMessage ? 'RESEND' : 'SEND';
     stopButton.hidden = activeTurnController === null;
     document.title = activeTurnController ? '● Closure is writing…' : unreadReply ? '✓ Closure replied' : baseDocumentTitle;
@@ -862,6 +922,8 @@ async function sendMessage(messageText, attachmentsToSend, options) {
     let turnFailed = false;
     const turnController = new AbortController();
     activeTurnController = turnController;
+    activeTurnConversationId = currentConversationId;
+    stopRequestedEarly = false;
     askForNotificationsOnce();
     resetTurnReadout();
     updateFormState();
@@ -887,7 +949,13 @@ async function sendMessage(messageText, attachmentsToSend, options) {
         switch (chatEvent.type) {
             case 'conversation':
                 turnConversationId = chatEvent.text;
+                if (activeTurnController === turnController) activeTurnConversationId = chatEvent.text;
                 if (!currentConversationId) storeConversationId(chatEvent.text);
+                if (stopRequestedEarly && activeTurnController === turnController) {
+                    stopRequestedEarly = false;
+                    requestStop(chatEvent.text);
+                    turnController.abort();
+                }
                 break;
             case 'thinkingLevel':
                 closureMessage.thinkingLevelText = chatEvent.text;
@@ -1130,7 +1198,7 @@ document.addEventListener('keydown', keyEvent => {
     if (isDialogOpen()) return;
     if (keyEvent.key === 'Escape') {
         if (closeFileViewer()) return;
-        if (activeTurnController) activeTurnController.abort();
+        if (activeTurnController) stopActiveTurn();
         else if (editingLastMessage) stopEditingLastMessage(true);
         else closeDrawers();
     }
@@ -1147,9 +1215,7 @@ document.querySelectorAll('.think-option').forEach(optionButton => {
     });
 });
 
-stopButton.addEventListener('click', () => {
-    if (activeTurnController) activeTurnController.abort();
-});
+stopButton.addEventListener('click', stopActiveTurn);
 
 document.getElementById('cancelEditButton').addEventListener('click', () => stopEditingLastMessage(true));
 jumpButton.addEventListener('click', scrollToBottom);

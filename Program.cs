@@ -149,6 +149,7 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     serviceProvider.GetRequiredService<ILogger<ChatLoop>>()));
 
 builder.Services.AddSingleton<ChatTitler>();
+builder.Services.AddSingleton<RunningTurns>();
 
 // The heartbeat: Closure wakes on her own when Shapto has been away a while (see HeartbeatService for the rules).
 builder.Services.AddSingleton<ActivityTracker>();
@@ -313,16 +314,31 @@ app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, Conversa
     return Results.Ok(new { conversationId = conversation.Id, turnResult });
 });
 
-app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, ActivityTracker activityTracker, HttpContext httpContext, CancellationToken cancellationToken) =>
+app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, ConversationManager conversationManager, ConversationCompactor conversationCompactor, ModelStatusMonitor modelStatusMonitor, ActivityTracker activityTracker, RunningTurns runningTurns, IHostApplicationLifetime applicationLifetime, HttpContext httpContext, CancellationToken cancellationToken) =>
 {
     using var chatActivity = activityTracker.BeginChat();
     httpContext.Response.ContentType = "text/event-stream";
     httpContext.Response.Headers.CacheControl = "no-cache";
 
+    // The page leaving (going home, closing the tab) must not stop the turn: once it's gone, events are dropped
+    // and the turn finishes and saves on its own. Only the Stop button cancels it (POST /chats/{id}/stop).
+    var pageIsGone = false;
     async Task SendAsync(object payload)
     {
-        await httpContext.Response.WriteAsync($"data: {JsonSerializer.Serialize(payload, webJsonOptions)}\n\n", cancellationToken);
-        await httpContext.Response.Body.FlushAsync(cancellationToken);
+        if (pageIsGone)
+        {
+            return;
+        }
+
+        try
+        {
+            await httpContext.Response.WriteAsync($"data: {JsonSerializer.Serialize(payload, webJsonOptions)}\n\n", cancellationToken);
+            await httpContext.Response.Body.FlushAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+            pageIsGone = true;
+        }
     }
     var modelStatus = await modelStatusMonitor.GetFreshStatusAsync(cancellationToken);
     if (modelStatus.State != ModelStates.Online)
@@ -337,6 +353,8 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         return;
     }
 
+    using var runningTurn = runningTurns.Begin(conversation.Id, applicationLifetime.ApplicationStopping);
+    var turnToken = runningTurn.Token;
     await SendAsync(new { type = "conversation", text = conversation.Id });
     RemovedTurn? removedTurn = null;
     var turnFinished = false;
@@ -347,7 +365,7 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         if (chatRequest.Regenerate == true)
         {
             // Regenerate reruns Shapto's last message; with new text, it's an edit of that message.
-            removedTurn = await chatLoop.RemoveLastTurnAsync(conversation, cancellationToken);
+            removedTurn = await chatLoop.RemoveLastTurnAsync(conversation, turnToken);
             if (removedTurn is null)
             {
                 await SendAsync(new { type = "error", text = "There's no reply to regenerate in this chat." });
@@ -359,13 +377,13 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         }
 
         // Compaction normally runs after a reply; this catches a chat that grew past the limit in a turn that failed.
-        if (await conversationCompactor.CompactIfNeededAsync(conversation, statusText => SendAsync(new { type = "status", text = statusText }), cancellationToken))
+        if (await conversationCompactor.CompactIfNeededAsync(conversation, statusText => SendAsync(new { type = "status", text = statusText }), turnToken))
         {
             await SendAsync(new { type = "compacted", text = conversation.Title, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation) });
         }
 
         var userMessageIndex = conversation.Messages.Count;
-        var turnResult = await chatLoop.RunTurnAsync(conversation, messageText, attachmentIds, chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), cancellationToken);
+        var turnResult = await chatLoop.RunTurnAsync(conversation, messageText, attachmentIds, chatRequest.Client ?? "test page", chatRequest.Thinking ?? "auto", chatEvent => SendAsync(chatEvent), turnToken);
         turnFinished = true;
         await SendAsync(new { type = "done", text = $"{turnResult.ElapsedSeconds:F1} s", userMessageIndex, replyMessageIndex = conversation.Messages.Count - 1, contextTokens = conversation.LastContextTokens, contextLimit = contextTokens, contextSplit = ConversationManager.EstimateContextSplit(conversation), statistics = turnResult.Statistics, sentAt = DateTimeOffset.Now });
 
@@ -380,9 +398,9 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
     {
         await SendAsync(new { type = "error", text = exception.Message });
     }
-    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    catch (OperationCanceledException) when (turnToken.IsCancellationRequested)
     {
-        // I pressed stop or closed the page; the turn has already been rolled back.
+        // I pressed stop (or the core is shutting down); the turn has already been rolled back.
     }
     finally
     {
@@ -393,18 +411,17 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         }
     }
 
-    async Task TrySendAsync(object payload)
-    {
-        try
-        {
-            await SendAsync(payload);
-        }
-        catch (Exception)
-        {
-            // The page is gone; compaction carries on regardless.
-        }
-    }
+    // SendAsync already ignores a page that's gone; kept so the compaction calls read the same as before.
+    Task TrySendAsync(object payload) => SendAsync(payload);
 });
+
+// The Stop button: cancels the chat's running turn (it's rolled back). Leaving the page doesn't, so the turn finishes on its own.
+app.MapPost("/chats/{conversationId}/stop", (string conversationId, RunningTurns runningTurns) =>
+    runningTurns.Stop(conversationId) ? Results.Ok() : Results.NotFound("Nothing is running in that chat."));
+
+// Lets a page that comes back to a chat mid-reply know to wait for it instead of showing the chat as if nothing were happening.
+app.MapGet("/chats/{conversationId}/turn", (string conversationId, RunningTurns runningTurns) =>
+    Results.Ok(new { running = runningTurns.IsRunning(conversationId) }));
 
 app.MapGet("/chats", (ConversationStore conversationStore) => conversationStore.List(50));
 
