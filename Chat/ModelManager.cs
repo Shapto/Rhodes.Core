@@ -1,14 +1,16 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using Rhodes.Core.Engines;
 using Rhodes.Core.Settings;
 
 namespace Rhodes.Core.Chat;
 
 /// <summary>
-/// One model llama-server's router knows about: its preset name from models.ini, whether it's loaded,
-/// and what its launch arguments say about context size and vision.
+/// One model the active engine can run: for llama-server its preset name from models.ini, whether it's loaded,
+/// and what its launch arguments say about context size and vision; for RustingStrata an entry of its models file
+/// (Calibrated says whether RustingStrata has measured it on this machine).
 /// </summary>
-public sealed record RouterModel(string Id, string Status, string? FilePath, int? ContextTokens, bool HasVision, IReadOnlyList<string> Arguments);
+public sealed record RouterModel(string Id, string Status, string? FilePath, int? ContextTokens, bool HasVision, IReadOnlyList<string> Arguments, bool? Calibrated = null);
 
 public static class RouterModelStates
 {
@@ -17,6 +19,7 @@ public static class RouterModelStates
     public const string Unloaded = "unloaded";
     public const string Sleeping = "sleeping";
     public const string Downloading = "downloading";
+    public const string Calibrating = "calibrating";
 }
 
 public static class VisionModes
@@ -37,11 +40,12 @@ public static class VisionModes
 }
 
 /// <summary>
-/// Knows which model Closure uses and switches it through llama-server's router mode (llama-server started with
-/// --models-preset models.ini, one [section] per model). Every request names CurrentModel, so a switch takes effect
-/// on the next message; the router unloads the old model itself because Start-Rhodes.sh runs it with --models-max 1.
-/// The choice is saved as LmStudio:Model in Data/appsettings.Local.json. Without router mode (a plain llama-server
-/// started with -m) the list is empty and everything works as before.
+/// Knows which model Closure uses and switches it. On llama.cpp that goes through llama-server's router mode
+/// (llama-server started with --models-preset models.ini, one [section] per model): every request names CurrentModel,
+/// so a switch takes effect on the next message, and the router unloads the old model itself because it runs with
+/// --models-max 1. The choice is saved as LmStudio:Model in Data/appsettings.Local.json. Without router mode (a plain
+/// llama-server started with -m) the list is empty and everything works as before. On RustingStrata the models come
+/// from its models file and a switch restarts its server with the other model (see EngineManager).
 /// </summary>
 public sealed class ModelManager
 {
@@ -56,6 +60,7 @@ public sealed class ModelManager
     private static readonly TimeSpan LoadStartGrace = TimeSpan.FromSeconds(20);
 
     private readonly HttpClient routerClient;
+    private readonly EngineManager engineManager;
     private readonly LocalSettingsFile localSettingsFile;
     private readonly ILogger<ModelManager> logger;
     private readonly object stateLock = new();
@@ -65,20 +70,15 @@ public sealed class ModelManager
     private Task? loadTask;
     private DateTimeOffset loadRequestedAt = DateTimeOffset.MinValue;
 
-    public ModelManager(string baseUrl, string configuredModel, int fallbackContextTokens, string? visionSetting, LocalSettingsFile localSettingsFile, ILogger<ModelManager> logger)
+    public ModelManager(EngineManager engineManager, string configuredModel, int fallbackContextTokens, string? visionSetting, LocalSettingsFile localSettingsFile, ILogger<ModelManager> logger)
     {
-        // The router's /models endpoints live at the server root, not under /v1.
-        var serverRoot = baseUrl.TrimEnd('/');
-        if (serverRoot.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
-        {
-            serverRoot = serverRoot[..^3];
-        }
-
+        // The address changes with the engine, so every request builds its URL from engineManager.ServerRoot
+        // (the router's /models endpoints live at the server root, not under /v1).
         routerClient = new HttpClient
         {
-            BaseAddress = new Uri(serverRoot + "/"),
             Timeout = Timeout.InfiniteTimeSpan,
         };
+        this.engineManager = engineManager;
         currentModel = configuredModel;
         FallbackContextTokens = fallbackContextTokens;
         VisionMode = VisionModes.Parse(visionSetting);
@@ -87,13 +87,19 @@ public sealed class ModelManager
     }
 
     /// <summary>
-    /// The preset name sent as "model" with every request. Empty until the router lists its models
+    /// Closure's model on the active engine. On llama.cpp the preset name, empty until the router lists its models
     /// (then the loaded one, or the first preset, is used) or when llama-server runs without router mode.
+    /// On RustingStrata the [section] name from its models file.
     /// </summary>
     public string CurrentModel
     {
         get
         {
+            if (engineManager.IsStrata)
+            {
+                return engineManager.CurrentStrataModel?.Id ?? "";
+            }
+
             lock (stateLock)
             {
                 return currentModel;
@@ -102,7 +108,14 @@ public sealed class ModelManager
     }
 
     /// <summary>
-    /// True once /models answered with router-style entries; false for a plain single-model llama-server.
+    /// The name sent as "model" with every request: the router preset on llama.cpp, and on RustingStrata the loaded
+    /// file's name, which keeps RustingStrata from swapping to another file in its folder.
+    /// </summary>
+    public string RequestModelName => engineManager.IsStrata ? engineManager.CurrentStrataModel?.ServedName ?? "" : CurrentModel;
+
+    /// <summary>
+    /// True once /models answered with router-style entries (or RustingStrata's models file lists models);
+    /// false for a plain single-model llama-server.
     /// </summary>
     public bool IsRouter { get; private set; }
 
@@ -132,10 +145,14 @@ public sealed class ModelManager
     public RouterModel? CurrentEntry => KnownModels.FirstOrDefault(model => model.Id == CurrentModel);
 
     /// <summary>
-    /// The context size Closure plans with: the ctx-size from the current model's preset when it sets one,
-    /// otherwise Chat:ContextTokens. Has to match what llama-server really allocates, or compaction starts too late.
+    /// The context size Closure plans with: the ctx-size from the current model's preset (or ctx from its RustingStrata
+    /// entry) when it sets one, then what RustingStrata reports in /props, then the engine's context-tokens from
+    /// engines.ini, and last Chat:ContextTokens. Has to match what the server really allocates, or compaction starts too late.
     /// </summary>
-    public int ContextTokens => CurrentEntry?.ContextTokens ?? FallbackContextTokens;
+    public int ContextTokens => CurrentEntry?.ContextTokens
+        ?? (engineManager.IsStrata ? engineManager.ServedContextTokens : null)
+        ?? engineManager.CurrentEngine?.ContextTokens
+        ?? FallbackContextTokens;
 
     /// <summary>
     /// Whether images are sent to the model. Auto means: when the current preset loads a vision projector (mmproj).
@@ -151,15 +168,28 @@ public sealed class ModelManager
 
     /// <summary>
     /// Asks the router for its models. Returns null when llama-server can't be reached; an empty list means no router mode.
+    /// On RustingStrata the list is its models file, with the running model's state taken from EngineManager.
     /// </summary>
     public async Task<IReadOnlyList<RouterModel>?> RefreshAsync(CancellationToken cancellationToken)
     {
+        if (engineManager.IsStrata)
+        {
+            var strataModels = ListStrataModels();
+            lock (stateLock)
+            {
+                knownModels = strataModels;
+                IsRouter = strataModels.Count > 0;
+            }
+
+            return strataModels;
+        }
+
         JsonNode? responseJson;
         try
         {
             using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutSource.CancelAfter(ListTimeout);
-            using var response = await routerClient.GetAsync("models", timeoutSource.Token);
+            using var response = await routerClient.GetAsync(engineManager.ServerRoot + "/models", timeoutSource.Token);
             if (!response.IsSuccessStatusCode)
             {
                 SetKnownModels([], isRouter: false);
@@ -201,6 +231,13 @@ public sealed class ModelManager
     /// </summary>
     public string? Select(string modelId)
     {
+        if (engineManager.IsStrata)
+        {
+            // LOAD on the current model starts RustingStrata again; USE on another one restarts it with that model.
+            var isRunningCurrent = modelId == CurrentModel && engineManager.RunningStrataModelId == modelId;
+            return modelId == CurrentModel && !isRunningCurrent ? engineManager.RequestStart() : engineManager.RequestStrataModel(modelId);
+        }
+
         if (KnownModels.All(model => model.Id != modelId))
         {
             return $"llama-server has no model called \"{modelId}\". The names are the [sections] in models.ini.";
@@ -241,6 +278,12 @@ public sealed class ModelManager
     /// </summary>
     public async Task<string?> UnloadAsync(string modelId, CancellationToken cancellationToken)
     {
+        if (engineManager.IsStrata)
+        {
+            // RustingStrata serves one model per server, so unloading it stops the server.
+            return engineManager.RequestStop();
+        }
+
         if (modelId == CurrentModel)
         {
             AutoLoadPaused = true;
@@ -248,7 +291,7 @@ public sealed class ModelManager
 
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(TimeSpan.FromMinutes(1));
-        using var response = await routerClient.PostAsync("models/unload", CreateModelBody(modelId), timeoutSource.Token);
+        using var response = await routerClient.PostAsync(engineManager.ServerRoot + "/models/unload", CreateModelBody(modelId), timeoutSource.Token);
         if (response.IsSuccessStatusCode)
         {
             logger.LogInformation("Unloaded {Model}", modelId);
@@ -256,6 +299,16 @@ public sealed class ModelManager
         }
 
         return $"llama-server refused to unload it ({(int)response.StatusCode}): {await response.Content.ReadAsStringAsync(cancellationToken)}";
+    }
+
+    /// <summary>
+    /// Lets the status check load the current model again after an engine switch or start, even if it was
+    /// unloaded on purpose (or failed) before.
+    /// </summary>
+    public void ResumeAutoLoad()
+    {
+        AutoLoadPaused = false;
+        LastLoadError = null;
     }
 
     /// <summary>
@@ -279,7 +332,7 @@ public sealed class ModelManager
         try
         {
             using var timeoutSource = new CancellationTokenSource(LoadTimeout);
-            using var response = await routerClient.PostAsync("models/load", CreateModelBody(modelId), timeoutSource.Token);
+            using var response = await routerClient.PostAsync(engineManager.ServerRoot + "/models/load", CreateModelBody(modelId), timeoutSource.Token);
             if (!response.IsSuccessStatusCode)
             {
                 var errorText = await response.Content.ReadAsStringAsync(timeoutSource.Token);
@@ -298,6 +351,28 @@ public sealed class ModelManager
         {
             loadRequestedAt = DateTimeOffset.Now;
         }
+    }
+
+    private IReadOnlyList<RouterModel> ListStrataModels()
+    {
+        var engineState = engineManager.State;
+        var runningModelId = engineManager.RunningStrataModelId;
+        return engineManager.Catalog.StrataModels
+            .Select(strataModel => new RouterModel(
+                strataModel.Id,
+                strataModel.Id != runningModelId ? RouterModelStates.Unloaded : engineState switch
+                {
+                    EngineStates.Running => RouterModelStates.Loaded,
+                    EngineStates.Starting => RouterModelStates.Loading,
+                    EngineStates.Calibrating => RouterModelStates.Calibrating,
+                    _ => RouterModelStates.Unloaded,
+                },
+                strataModel.ModelPath,
+                strataModel.ContextTokens,
+                strataModel.HasVision,
+                EngineCatalog.ToFlags(strataModel.Arguments).ToList(),
+                EngineManager.IsCalibrated(strataModel)))
+            .ToList();
     }
 
     private void SetKnownModels(IReadOnlyList<RouterModel> routerModels, bool isRouter)

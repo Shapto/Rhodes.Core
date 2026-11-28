@@ -2,11 +2,12 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
+using Rhodes.Core.Engines;
 
 namespace Rhodes.Core.Chat;
 
 /// <summary>
-/// Talks to any OpenAI-compatible chat endpoint: LM Studio now, llama-server later.
+/// Talks to the active engine's OpenAI-compatible chat endpoint (llama-server or RustingStrata, see EngineManager).
 /// Always streams, and logs timing and token counts for every request.
 /// </summary>
 public sealed class LmStudioClient
@@ -15,6 +16,7 @@ public sealed class LmStudioClient
     public const string ContentDelta = "content";
 
     private readonly HttpClient httpClient;
+    private readonly EngineManager engineManager;
     private readonly ModelManager modelManager;
     private readonly ILogger<LmStudioClient> logger;
 
@@ -72,14 +74,15 @@ public sealed class LmStudioClient
 
     public double? LastTokensPerSecond { get; private set; }
 
-    public LmStudioClient(string baseUrl, ModelManager modelManager, string? apiKey, ILogger<LmStudioClient> logger)
+    public LmStudioClient(EngineManager engineManager, ModelManager modelManager, string? apiKey, ILogger<LmStudioClient> logger)
     {
+        // No base address: the URL follows the active engine (engineManager.BaseUrl) on every request.
         var handler = new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(5) };
         httpClient = new HttpClient(handler)
         {
-            BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromMinutes(30),
         };
+        this.engineManager = engineManager;
         if (!string.IsNullOrWhiteSpace(apiKey))
         {
             httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
@@ -99,7 +102,8 @@ public sealed class LmStudioClient
         var requestBody = new JsonObject
         {
             // The router picks the model by this name (its [section] in models.ini); a single-model llama-server ignores it.
-            ["model"] = modelManager.CurrentModel,
+            // RustingStrata gets the loaded file's name, so it never swaps models because of it.
+            ["model"] = modelManager.RequestModelName,
             ["messages"] = messages,
             ["stream"] = true,
             ["stream_options"] = new JsonObject { ["include_usage"] = true },
@@ -125,16 +129,25 @@ public sealed class LmStudioClient
         }
         else
         {
-            requestBody["reasoning_budget_tokens"] = thinkingLevel switch
+            var thinkingBudget = thinkingLevel switch
             {
                 ThinkingLevel.Light => LightThinkingBudget,
                 ThinkingLevel.Code => CodeThinkingBudget,
                 _ => FullThinkingBudget,
             };
-            requestBody["reasoning_budget_message"] = ThinkingBudgetMessage;
+            if (engineManager.ThinkingStyle == ThinkingStyles.RustingStrata)
+            {
+                // RustingStrata ends the thinking block itself once thinking_budget tokens are used; it has no budget message.
+                requestBody["thinking_budget"] = thinkingBudget;
+            }
+            else
+            {
+                requestBody["reasoning_budget_tokens"] = thinkingBudget;
+                requestBody["reasoning_budget_message"] = ThinkingBudgetMessage;
+            }
         }
         var stopwatch = Stopwatch.StartNew();
-        using var request = new HttpRequestMessage(HttpMethod.Post, "chat/completions")
+        using var request = new HttpRequestMessage(HttpMethod.Post, engineManager.BaseUrl + "/chat/completions")
         {
             Content = new StringContent(requestBody.ToJsonString(), Encoding.UTF8, "application/json"),
         };

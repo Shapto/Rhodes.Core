@@ -1,4 +1,4 @@
-/* Rhodes home page: the MODEL and SETTINGS panels. Uses the tokens from rhodes.css and the inputs from home.css. */
+/* Rhodes home page: the ENGINE, MODEL and SETTINGS panels. Uses the tokens from rhodes.css and the inputs from home.css. */
 
 /* ---------- model ---------- */
 
@@ -49,9 +49,29 @@
     }
 
     .model-status[data-status="loading"],
-    .model-status[data-status="downloading"] {
+    .model-status[data-status="downloading"],
+    .model-status[data-status="calibrating"] {
         color: var(--warning);
     }
+
+    /* Engine states (the ENGINE panel uses the same rows as the model list). */
+    .model-status[data-status="running"] {
+        color: var(--accent);
+    }
+
+    .model-status[data-status="starting"],
+    .model-status[data-status="stopping"] {
+        color: var(--warning);
+    }
+
+    .model-status[data-status="failed"] {
+        color: var(--danger);
+    }
+
+.engine-progress {
+    overflow-wrap: anywhere;
+    color: var(--warning);
+}
 
 .model-meta {
     font-size: 11px;

@@ -1,4 +1,5 @@
 ﻿using System.Net;
+using Rhodes.Core.Engines;
 
 namespace Rhodes.Core.Chat;
 
@@ -21,9 +22,10 @@ public sealed record ModelStatusSnapshot(string State, string Detail, double? To
 }
 
 /// <summary>
-/// Checks llama-server every few seconds, so pages can show whether Closure's model is up
-/// and a message fails right away instead of hanging when it isn't. In router mode it reads the current model's
-/// status from /models (and loads it when it isn't loaded); a plain llama-server is asked /health instead.
+/// Checks the model server every few seconds, so pages can show whether Closure's model is up
+/// and a message fails right away instead of hanging when it isn't. While the engine is starting, stopping or
+/// calibrating, that's the status. Otherwise in llama-server's router mode it reads the current model's
+/// status from /models (and loads it when it isn't loaded); a plain server is asked /health instead.
 /// </summary>
 public sealed class ModelStatusMonitor : BackgroundService
 {
@@ -31,26 +33,22 @@ public sealed class ModelStatusMonitor : BackgroundService
     private static readonly TimeSpan HealthTimeout = TimeSpan.FromSeconds(2);
 
     private readonly HttpClient healthClient;
+    private readonly EngineManager engineManager;
     private readonly LmStudioClient lmStudioClient;
     private readonly ModelManager modelManager;
     private readonly ILogger<ModelStatusMonitor> logger;
     private readonly SemaphoreSlim checkLock = new(1, 1);
     private ModelStatusSnapshot currentStatus = new(ModelStates.Offline, "not checked yet", null, DateTimeOffset.MinValue);
 
-    public ModelStatusMonitor(string baseUrl, LmStudioClient lmStudioClient, ModelManager modelManager, ILogger<ModelStatusMonitor> logger)
+    public ModelStatusMonitor(EngineManager engineManager, LmStudioClient lmStudioClient, ModelManager modelManager, ILogger<ModelStatusMonitor> logger)
     {
-        // /health lives at the server root, not under /v1.
-        var serverRoot = baseUrl.TrimEnd('/');
-        if (serverRoot.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
-        {
-            serverRoot = serverRoot[..^3];
-        }
-
+        // The address follows the active engine, so each check builds its URL from engineManager.ServerRoot
+        // (/health lives at the server root, not under /v1).
         healthClient = new HttpClient
         {
-            BaseAddress = new Uri(serverRoot + "/"),
             Timeout = HealthTimeout,
         };
+        this.engineManager = engineManager;
         this.lmStudioClient = lmStudioClient;
         this.modelManager = modelManager;
         this.logger = logger;
@@ -88,7 +86,7 @@ public sealed class ModelStatusMonitor : BackgroundService
         try
         {
             var routerModels = await modelManager.RefreshAsync(cancellationToken);
-            var (state, detail) = routerModels is { Count: > 0 } ? CheckRouterModel() : await QueryHealthAsync(cancellationToken);
+            var (state, detail) = DescribeEngine() ?? (routerModels is { Count: > 0 } && !engineManager.IsStrata ? CheckRouterModel() : await QueryHealthAsync(cancellationToken));
             if (state != currentStatus.State)
             {
                 logger.LogInformation("Model server is now {State} ({Detail})", state, detail);
@@ -100,6 +98,23 @@ public sealed class ModelStatusMonitor : BackgroundService
         {
             checkLock.Release();
         }
+    }
+
+    /// <summary>
+    /// The status while the engine itself isn't simply running (starting, calibrating, stopped, failed), or null when
+    /// it is and the server should be asked.
+    /// </summary>
+    private (string State, string Detail)? DescribeEngine()
+    {
+        var engineName = engineManager.CurrentEngine?.Name ?? "engine";
+        return engineManager.State switch
+        {
+            EngineStates.Starting or EngineStates.Stopping => (ModelStates.Loading, engineManager.Detail),
+            EngineStates.Calibrating => (ModelStates.Loading, engineManager.Detail + " · Closure can't answer until it's done"),
+            EngineStates.Stopped => (ModelStates.Offline, $"{engineName} is stopped · press LOAD on the home page"),
+            EngineStates.Failed => (ModelStates.Offline, $"{engineName} failed: {engineManager.Detail}"),
+            _ => null,
+        };
     }
 
     /// <summary>
@@ -146,17 +161,17 @@ public sealed class ModelStatusMonitor : BackgroundService
     }
 
     /// <summary>
-    /// Asks a plain (non-router) model server whether it's ready: llama-server's /health, or for servers without one
-    /// (RustingStrata only has the OpenAI routes), whether /v1/models answers.
+    /// Asks a plain (non-router) model server whether it's ready: /health (llama-server and RustingStrata both have it),
+    /// or for a server without one, whether /v1/models answers.
     /// </summary>
     private async Task<(string State, string Detail)> QueryHealthAsync(CancellationToken cancellationToken)
     {
         try
         {
-            using var response = await healthClient.GetAsync("health", cancellationToken);
+            using var response = await healthClient.GetAsync(engineManager.ServerRoot + "/health", cancellationToken);
             if (response.IsSuccessStatusCode)
             {
-                return (ModelStates.Online, "ready");
+                return (ModelStates.Online, engineManager.IsStrata ? "ready · " + modelManager.CurrentModel : "ready");
             }
 
             if (response.StatusCode == HttpStatusCode.ServiceUnavailable)
@@ -169,15 +184,17 @@ public sealed class ModelStatusMonitor : BackgroundService
                 return (ModelStates.Offline, $"health check returned {(int)response.StatusCode}");
             }
 
-            using var modelsResponse = await healthClient.GetAsync("v1/models", cancellationToken);
+            using var modelsResponse = await healthClient.GetAsync(engineManager.BaseUrl + "/models", cancellationToken);
             return modelsResponse.IsSuccessStatusCode ? (ModelStates.Online, "ready (no /health; /v1/models answered)") : (ModelStates.Offline, $"no /health, and /v1/models returned {(int)modelsResponse.StatusCode}");
         }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            // A server that's busy can miss one check, so a timeout doesn't count as gone.
             return (ModelStates.Offline, $"no answer within {HealthTimeout.TotalSeconds:0} s");
         }
         catch (HttpRequestException exception)
         {
+            engineManager.ReportUnreachable(exception.Message);
             return (ModelStates.Offline, exception.Message);
         }
     }

@@ -59,6 +59,12 @@ builder.Services.AddSingleton<ICoreTool, RunCommandTool>();
 builder.Services.AddSingleton<ICoreTool, CloneRepoTool>();
 builder.Services.AddSingleton<ICoreTool, LittleHandyTool>();
 
+// haven, the home server: status, containers and approved commands over SSH with this computer's existing key.
+builder.Services.AddSingleton<HavenConnection>();
+builder.Services.AddSingleton<ICoreTool, HavenStatusTool>();
+builder.Services.AddSingleton<ICoreTool, HavenContainersTool>();
+builder.Services.AddSingleton<ICoreTool, HavenRunCommandTool>();
+
 // The knowledge library: reference material (decompiled RimWorld, Shapto's repos, .NET docs, lore) in RhodesIsland/Knowledge,
 // keyword-indexed into Data/knowledge.db. Indexing runs in the background at startup and only redoes changed files.
 var knowledgeFolder = builder.Configuration["Knowledge:Path"] ?? Path.Combine(Path.GetDirectoryName(dataFolder)!, "Knowledge");
@@ -103,8 +109,20 @@ if (rhodesDataFolder is null)
 
 var localSettingsFile = new Rhodes.Core.Settings.LocalSettingsFile(localSettingsPath);
 builder.Services.AddSingleton(localSettingsFile);
+
+// The model engines (llama.cpp, RustingStrata) from Data/engines.ini: which one runs, and starting and stopping its
+// server. The first engines.ini takes llama.cpp's address from the old LmStudio:BaseUrl setting.
+builder.Services.AddSingleton(new Rhodes.Core.Engines.EngineCatalog(rhodesDataFolder ?? dataFolder, builder.Configuration["LmStudio:BaseUrl"]));
+builder.Services.AddSingleton(serviceProvider => new Rhodes.Core.Engines.EngineManager(
+    serviceProvider.GetRequiredService<Rhodes.Core.Engines.EngineCatalog>(),
+    builder.Configuration[Rhodes.Core.Engines.EngineManager.EngineSettingKey],
+    builder.Configuration[Rhodes.Core.Engines.EngineManager.StrataModelSettingKey],
+    localSettingsFile,
+    serviceProvider.GetRequiredService<ILogger<Rhodes.Core.Engines.EngineManager>>()));
+builder.Services.AddHostedService(serviceProvider => serviceProvider.GetRequiredService<Rhodes.Core.Engines.EngineManager>());
+
 builder.Services.AddSingleton(serviceProvider => new ModelManager(
-    builder.Configuration["LmStudio:BaseUrl"] ?? "http://localhost:1234/v1",
+    serviceProvider.GetRequiredService<Rhodes.Core.Engines.EngineManager>(),
     builder.Configuration[ModelManager.SettingKey] ?? "",
     contextTokens,
     builder.Configuration[ModelManager.VisionSettingKey],
@@ -117,13 +135,13 @@ builder.Services.AddSingleton(serviceProvider => new Rhodes.Core.Settings.CoreSe
     serviceProvider.GetRequiredService<ILogger<Rhodes.Core.Settings.CoreSettings>>()));
 
 builder.Services.AddSingleton(serviceProvider => new LmStudioClient(
-    builder.Configuration["LmStudio:BaseUrl"] ?? "http://localhost:1234/v1",
+    serviceProvider.GetRequiredService<Rhodes.Core.Engines.EngineManager>(),
     serviceProvider.GetRequiredService<ModelManager>(),
     builder.Configuration["LmStudio:ApiKey"],
     serviceProvider.GetRequiredService<ILogger<LmStudioClient>>()));
 
 builder.Services.AddSingleton(serviceProvider => new ModelStatusMonitor(
-    builder.Configuration["LmStudio:BaseUrl"] ?? "http://localhost:1234/v1",
+    serviceProvider.GetRequiredService<Rhodes.Core.Engines.EngineManager>(),
     serviceProvider.GetRequiredService<LmStudioClient>(),
     serviceProvider.GetRequiredService<ModelManager>(),
     serviceProvider.GetRequiredService<ILogger<ModelStatusMonitor>>()));
@@ -238,22 +256,82 @@ app.UseStaticFiles(new StaticFileOptions
 app.MapGet("/", () => Results.Redirect("/home.html"));
 app.MapGet("/status", (ModelStatusMonitor modelStatusMonitor) => modelStatusMonitor.Current);
 
-// Model switching (llama-server router mode, one [section] per model in models.ini) and the home page's settings.
-app.MapGet("/models", async (ModelManager modelManager, CancellationToken cancellationToken) =>
+// Model switching (llama-server router mode, one [section] per model in models.ini, or RustingStrata's models file)
+// and the home page's settings.
+app.MapGet("/models", async (ModelManager modelManager, Rhodes.Core.Engines.EngineManager engineManager, CancellationToken cancellationToken) =>
 {
     var routerModels = await modelManager.RefreshAsync(cancellationToken);
     return Results.Ok(new
     {
         Reachable = routerModels is not null,
+        EngineKind = engineManager.CurrentEngine?.Kind,
+        EngineName = engineManager.CurrentEngine?.Name,
         modelManager.IsRouter,
         modelManager.CurrentModel,
         modelManager.ContextTokens,
         modelManager.VisionEnabled,
         modelManager.AutoLoadPaused,
         modelManager.LastLoadError,
-        Models = modelManager.KnownModels.Select(routerModel => new { routerModel.Id, routerModel.Status, routerModel.FilePath, routerModel.ContextTokens, routerModel.HasVision }),
+        Models = modelManager.KnownModels.Select(routerModel => new { routerModel.Id, routerModel.Status, routerModel.FilePath, routerModel.ContextTokens, routerModel.HasVision, routerModel.Calibrated, routerModel.Arguments }),
     });
 });
+
+// The ENGINE panel: which engine runs Closure's model, switching it, starting and stopping its server,
+// and calibrating RustingStrata's model.
+app.MapGet("/engines", (Rhodes.Core.Engines.EngineManager engineManager) =>
+{
+    var engineCatalog = engineManager.Catalog;
+    var currentEngine = engineManager.CurrentEngine;
+    return Results.Ok(new
+    {
+        Current = currentEngine?.Name,
+        engineManager.State,
+        engineManager.Detail,
+        engineManager.LastError,
+        engineManager.LastLogLine,
+        engineManager.CalibrationStartedAt,
+        engineManager.LastCalibrationResult,
+        CatalogProblem = engineCatalog.Problem,
+        engineManager.EnginesFilePath,
+        Engines = engineCatalog.Engines.Select(engine => new
+        {
+            engine.Name,
+            engine.Kind,
+            engine.BaseUrl,
+            engine.CanStart,
+            engine.ContextTokens,
+            engine.ThinkingStyle,
+            engine.LogPath,
+            engine.ModelsFile,
+            IsCurrent = engine.Name == currentEngine?.Name,
+        }),
+    });
+});
+app.MapPost("/engines/select", (Rhodes.Core.Engines.EngineChoice engineChoice, Rhodes.Core.Engines.EngineManager engineManager, ModelManager modelManager) =>
+{
+    if (engineManager.RequestSwitch(engineChoice.Engine) is { } errorText)
+    {
+        return Results.BadRequest(errorText);
+    }
+
+    // A model unloaded on purpose earlier shouldn't keep llama.cpp idle after switching back to it.
+    modelManager.ResumeAutoLoad();
+    return Results.Ok();
+});
+app.MapPost("/engines/start", (Rhodes.Core.Engines.EngineManager engineManager, ModelManager modelManager) =>
+{
+    if (engineManager.RequestStart() is { } errorText)
+    {
+        return Results.BadRequest(errorText);
+    }
+
+    modelManager.ResumeAutoLoad();
+    return Results.Ok();
+});
+app.MapPost("/engines/stop", (Rhodes.Core.Engines.EngineManager engineManager) =>
+    engineManager.RequestStop() is { } errorText ? Results.BadRequest(errorText) : Results.Ok());
+app.MapPost("/engines/calibrate", (Rhodes.Core.Engines.EngineManager engineManager) =>
+    engineManager.RequestCalibration() is { } errorText ? Results.BadRequest(errorText) : Results.Ok());
 app.MapPost("/models/select", (ModelChoice modelChoice, ModelManager modelManager) =>
     modelManager.Select(modelChoice.Model) is { } errorText ? Results.BadRequest(errorText) : Results.Ok());
 app.MapPost("/models/unload", async (ModelChoice modelChoice, ModelManager modelManager, CancellationToken cancellationToken) =>

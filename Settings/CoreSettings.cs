@@ -53,9 +53,19 @@ public sealed class CoreSettings
         new("Workspace:Path", "Workspace folder", SettingKinds.Text,
             "Her sandbox folder for code. Empty means Data/workspace.",
             Live: false, ""),
-        new("LmStudio:BaseUrl", "Model server URL", SettingKinds.Text,
-            "Where llama-server listens, ending in /v1.",
-            Live: false, "http://localhost:1234/v1"),
+        // The model server's address now lives per engine in Data/engines.ini (see the ENGINE panel).
+        new(Rhodes.Core.Tools.HavenConnection.HostSettingKey, "haven address", SettingKinds.Text,
+            "haven's host name or IP for Closure's haven tools (SSH with this computer's existing key).",
+            Live: true, "haven"),
+        new(Rhodes.Core.Tools.HavenConnection.UserSettingKey, "haven user", SettingKinds.Text,
+            "Your account name on haven. Empty means the same name as here (or what ~/.ssh/config says).",
+            Live: true, ""),
+        new(Rhodes.Core.Tools.HavenConnection.PortSettingKey, "haven SSH port", SettingKinds.Text,
+            "Empty means 22 (or what ~/.ssh/config says).",
+            Live: true, ""),
+        new(Rhodes.Core.Tools.HavenConnection.DockerCommandSettingKey, "haven docker command", SettingKinds.Text,
+            "How docker runs on haven: docker when your user is in the docker group, or sudo -n docker.",
+            Live: true, "docker"),
     ];
 
     private readonly LocalSettingsFile localSettingsFile;
