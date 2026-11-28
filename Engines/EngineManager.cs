@@ -554,8 +554,16 @@ public sealed class EngineManager : IHostedService
             if (!response.IsSuccessStatusCode)
             {
                 var errorText = await response.Content.ReadAsStringAsync();
-                lastCalibrationResult = $"failed at {DateTimeOffset.Now:HH:mm} ({(int)response.StatusCode})";
-                throw new InvalidOperationException($"calibration failed ({(int)response.StatusCode}): {errorText}");
+                var errorMessage = TryReadErrorMessage(errorText) ?? errorText;
+                lastCalibrationResult = $"failed at {DateTimeOffset.Now:HH:mm}: {errorMessage}";
+                logger.LogWarning("Calibrating {Model} failed ({StatusCode}): {Error}", strataModel.Id, (int)response.StatusCode, errorMessage);
+
+                // A failed calibrate-and-load leaves RustingStrata with no model, so start it again as it was:
+                // Closure keeps working with the uncalibrated settings.
+                SetState(EngineStates.Starting, "calibration failed · starting " + strataModel.Id + " again");
+                await StopEngineAsync(strataEngine);
+                await StartEngineAsync(strataEngine);
+                return;
             }
 
             lastCalibrationResult = $"done at {DateTimeOffset.Now:HH:mm}, took {(DateTimeOffset.Now - calibrationStartedAt.Value).TotalMinutes:0} min";
@@ -566,6 +574,18 @@ public sealed class EngineManager : IHostedService
         finally
         {
             calibrationStartedAt = null;
+        }
+    }
+
+    private static string? TryReadErrorMessage(string errorText)
+    {
+        try
+        {
+            return JsonNode.Parse(errorText)?["error"]?["message"]?.GetValue<string>();
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return null;
         }
     }
 
@@ -757,7 +777,11 @@ public sealed class EngineManager : IHostedService
             : "'" + argument.Replace("'", "'\\''") + "'";
     }
 
-    private static string? ReadLastLogLine(string logPath)
+    /// <summary>
+    /// The newest line of a log file (progress lines ending in a carriage return count as lines), without terminal
+    /// colour codes and cut to 160 characters. Null when the file can't be read.
+    /// </summary>
+    public static string? ReadLastLogLine(string logPath)
     {
         try
         {

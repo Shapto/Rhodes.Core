@@ -27,6 +27,11 @@ public sealed class Conversation
     /// </summary>
     public bool TitlePending { get; set; }
 
+    /// <summary>
+    /// This chat's review mode (off, auto, on: see ReviewModes). Null means the dashboard default applies.
+    /// </summary>
+    public string? ReviewMode { get; set; }
+
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.Now;
 
     public List<JsonObject> Messages { get; } = [];
@@ -58,7 +63,9 @@ public sealed class Conversation
     public int LastMemoryCharacters { get; set; }
 }
 
-public sealed record ChatRequest(string Message, string? Client, string? Thinking, string? ConversationId, IReadOnlyList<string>? AttachmentIds, bool? Regenerate);
+public sealed record ChatRequest(string Message, string? Client, string? Thinking, string? ConversationId, IReadOnlyList<string>? AttachmentIds, bool? Regenerate, string? Review = null);
+
+public sealed record ReviewChoice(string Mode);
 
 /// <summary>
 /// What Shapto's last message said and which files it had, after the turn was removed to run it again,

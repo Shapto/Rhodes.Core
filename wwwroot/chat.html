@@ -57,12 +57,20 @@
                         <button type="button" class="stop label" id="stopButton" title="Esc" hidden>■ STOP</button>
                     </div>
                     <div class="form-footer">
-                        <div class="think-row" role="radiogroup" aria-label="Thinking">
-                            <span class="row-label">THINK</span>
-                            <button type="button" class="think-option" role="radio" aria-checked="true" data-value="auto">AUTO</button>
-                            <button type="button" class="think-option" role="radio" aria-checked="false" data-value="on">ON</button>
-                            <button type="button" class="think-option" role="radio" aria-checked="false" data-value="off">OFF</button>
-                            <button type="button" class="think-option" role="radio" aria-checked="false" data-value="code">CODE</button>
+                        <div class="mode-rows">
+                            <div class="think-row" role="radiogroup" aria-label="Thinking">
+                                <span class="row-label">THINK</span>
+                                <button type="button" class="think-option" role="radio" aria-checked="true" data-value="auto">AUTO</button>
+                                <button type="button" class="think-option" role="radio" aria-checked="false" data-value="on">ON</button>
+                                <button type="button" class="think-option" role="radio" aria-checked="false" data-value="off">OFF</button>
+                                <button type="button" class="think-option" role="radio" aria-checked="false" data-value="code">CODE</button>
+                            </div>
+                            <div class="think-row" role="radiogroup" aria-label="Review" title="The extra passes after her answer: Little Handy's code review and fact check, and the answer check. Saved for this chat.">
+                                <span class="row-label">REVIEW</span>
+                                <button type="button" class="review-option" role="radio" aria-checked="false" data-value="off" title="Never review: no Little Handy review or fact check, no answer check.">OFF</button>
+                                <button type="button" class="review-option" role="radio" aria-checked="true" data-value="auto" title="Review only when something is unproven: files changed with nothing run after, or the reply names code no tool showed. Skipped when her code ran and succeeded.">AUTO</button>
+                                <button type="button" class="review-option" role="radio" aria-checked="false" data-value="on" title="Always review (the old behaviour).">ON</button>
+                            </div>
                         </div>
                         <span class="shortcut-hint">↑ edit last · Esc stop</span>
                         <div class="context-row" title="How much of Closure's context this chat uses. Compaction starts at the tick (70%).">

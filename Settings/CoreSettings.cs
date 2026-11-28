@@ -29,6 +29,9 @@ public sealed class CoreSettings
 {
     public static readonly IReadOnlyList<SettingDefinition> Definitions =
     [
+        new(ReviewModes.SettingKey, "Review (new chats)", SettingKinds.Choice,
+            "The extra passes after her answer: Little Handy's code review and fact check, and the answer check. Off never, auto only when something is unproven (files changed with nothing run after, or code named that no tool showed), on always. Each chat can pick its own with the REVIEW buttons.",
+            Live: true, ReviewModes.Auto, ReviewModes.All),
         new(ModelManager.VisionSettingKey, "Vision", SettingKinds.Choice,
             "Send attached images to the model. Auto turns it on when the model's preset in models.ini loads an mmproj file.",
             Live: true, VisionModes.Auto, [VisionModes.Auto, VisionModes.On, VisionModes.Off]),
@@ -71,10 +74,12 @@ public sealed class CoreSettings
     private readonly LocalSettingsFile localSettingsFile;
     private readonly IConfiguration startupConfiguration;
     private readonly ModelManager modelManager;
+    private readonly ReviewDefaults reviewDefaults;
     private readonly ILogger<CoreSettings> logger;
 
-    public CoreSettings(LocalSettingsFile localSettingsFile, IConfiguration startupConfiguration, ModelManager modelManager, ILogger<CoreSettings> logger)
+    public CoreSettings(LocalSettingsFile localSettingsFile, IConfiguration startupConfiguration, ModelManager modelManager, ReviewDefaults reviewDefaults, ILogger<CoreSettings> logger)
     {
+        this.reviewDefaults = reviewDefaults;
         this.localSettingsFile = localSettingsFile;
         this.startupConfiguration = startupConfiguration;
         this.modelManager = modelManager;
@@ -185,6 +190,9 @@ public sealed class CoreSettings
         {
             case ModelManager.VisionSettingKey:
                 modelManager.VisionMode = VisionModes.Parse(settingText);
+                break;
+            case ReviewModes.SettingKey:
+                reviewDefaults.Mode = settingText;
                 break;
             case ModelManager.ContextSettingKey:
                 modelManager.FallbackContextTokens = (int)double.Parse(settingText, CultureInfo.InvariantCulture);

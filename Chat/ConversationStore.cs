@@ -57,6 +57,9 @@ public sealed partial class ConversationStore : IDisposable
         // Chats from before deferred titling count as already titled, so the default is 0.
         AddColumnIfMissing("title_pending", "INTEGER NOT NULL DEFAULT 0");
 
+        // The chat's own review mode (off, auto, on); NULL means the dashboard default.
+        AddColumnIfMissing("review_mode", "TEXT");
+
         // The search index holds what Shapto and Closure said (not tool results or thinking), one row per message.
         // Chats from before the index existed are indexed once, the first time the core starts with it.
         using var indexExistsCommand = CreateCommand(null, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'chat_search';");
@@ -209,7 +212,7 @@ public sealed partial class ConversationStore : IDisposable
     {
         lock (databaseLock)
         {
-            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at, summary, summary_covers_through, tool_results_collapsed_before, created_at, title_is_manual, memory_pass_through, title_pending FROM conversations WHERE id = $id;", ("$id", conversationId));
+            using var conversationCommand = CreateCommand(null, "SELECT title, last_user_message_at, summary, summary_covers_through, tool_results_collapsed_before, created_at, title_is_manual, memory_pass_through, title_pending, review_mode FROM conversations WHERE id = $id;", ("$id", conversationId));
             using var conversationReader = conversationCommand.ExecuteReader();
             if (!conversationReader.Read())
             {
@@ -227,6 +230,7 @@ public sealed partial class ConversationStore : IDisposable
                 TitleIsManual = conversationReader.GetInt64(6) != 0,
                 MemoryPassThrough = conversationReader.GetInt32(7),
                 TitlePending = conversationReader.GetInt64(8) != 0,
+                ReviewMode = conversationReader.IsDBNull(9) ? null : Rhodes.Core.Chat.ReviewModes.Parse(conversationReader.GetString(9)),
             };
 
             using var messagesCommand = CreateCommand(null, "SELECT message_json FROM conversation_messages WHERE conversation_id = $id ORDER BY position;", ("$id", conversationId));
@@ -324,6 +328,16 @@ public sealed partial class ConversationStore : IDisposable
                 ("$title", conversation.Title),
                 ("$titleIsManual", conversation.TitleIsManual ? 1 : 0),
                 ("$titlePending", conversation.TitlePending ? 1 : 0),
+                ("$id", conversation.Id));
+        }
+    }
+
+    public void SaveReviewMode(Conversation conversation)
+    {
+        lock (databaseLock)
+        {
+            Execute(null, "UPDATE conversations SET review_mode = $reviewMode WHERE id = $id;",
+                ("$reviewMode", conversation.ReviewMode),
                 ("$id", conversation.Id));
         }
     }

@@ -3,7 +3,7 @@
 namespace Rhodes.Core.Chat;
 
 public sealed record DisplayMessage(int Index, string Role, string Text, string? Reasoning, string? ToolName, JsonNode? Attachments, string? SentAt, JsonNode? Statistics, JsonNode? Questions, bool Pinned);
-public sealed record ConversationView(string Id, string Title, string Summary, int SummaryCoversThrough, int? ContextTokens, int ContextLimit, ContextSplit? ContextSplit, IReadOnlyList<DisplayMessage> Messages);
+public sealed record ConversationView(string Id, string Title, string Summary, int SummaryCoversThrough, int? ContextTokens, int ContextLimit, ContextSplit? ContextSplit, IReadOnlyList<DisplayMessage> Messages, string? ReviewMode = null);
 
 /// <summary>
 /// Hands out one shared Conversation object per chat id, loading it from rhodes.db the first time.
@@ -107,7 +107,7 @@ public sealed class ConversationManager
                 message["rhodes_pinned"] is JsonValue pinnedValue && pinnedValue.TryGetValue<bool>(out var isPinned) && isPinned))
             .Where(displayMessage => displayMessage.Text.Length > 0 || displayMessage.Reasoning is not null || displayMessage.Attachments is JsonArray { Count: > 0 } || displayMessage.Questions is not null)
             .ToList();
-        return new ConversationView(conversation.Id, conversation.Title, conversation.Summary, conversation.SummaryCoversThrough, conversation.LastContextTokens, contextLimit, EstimateContextSplit(conversation), displayMessages);
+        return new ConversationView(conversation.Id, conversation.Title, conversation.Summary, conversation.SummaryCoversThrough, conversation.LastContextTokens, contextLimit, EstimateContextSplit(conversation), displayMessages, conversation.ReviewMode);
     }
 
     /// <summary>

@@ -83,9 +83,10 @@ public sealed partial class ChatLoop
         "If something is wrong, reply with only the corrected full answer, written to Shapto as your answer, without mentioning this check.";
 
 
-    public ChatLoop(LmStudioClient lmStudioClient, MemoryRanker memoryRanker, ConversationStore conversationStore, UploadStore uploadStore, DocumentStore documentStore, HeartbeatStore heartbeatStore, ApprovalService approvalService, IEnumerable<ICoreTool> tools, string personaPath, int maximumThinkingCharacters, ModelManager modelManager, ILogger<ChatLoop> logger)
+    public ChatLoop(LmStudioClient lmStudioClient, MemoryRanker memoryRanker, ConversationStore conversationStore, UploadStore uploadStore, DocumentStore documentStore, HeartbeatStore heartbeatStore, ApprovalService approvalService, IEnumerable<ICoreTool> tools, string personaPath, int maximumThinkingCharacters, ModelManager modelManager, ReviewDefaults reviewDefaults, ILogger<ChatLoop> logger)
     {
         this.modelManager = modelManager;
+        this.reviewDefaults = reviewDefaults;
         this.heartbeatStore = heartbeatStore;
         this.approvalService = approvalService;
         this.uploadStore = uploadStore;
@@ -105,6 +106,8 @@ public sealed partial class ChatLoop
     /// Turns an attached image's id into the data URL a vision model reads, or null when the model can't see images
     /// (then requests carry only the text note about the image).
     /// </summary>
+    private readonly ReviewDefaults reviewDefaults;
+
     private Func<string, string?>? ImageResolver => visionEnabled ? uploadStore.LoadImageDataUrl : null;
 
     /// <summary>
@@ -245,10 +248,15 @@ public sealed partial class ChatLoop
             var completedToolCalls = new HashSet<string>();
             string? announcedAction = null;
             var announcedReasoning = "";
+            // Her reply text from steps that ended in tool calls. It's part of her reply (shown and kept in order),
+            // so an empty last step after a real answer doesn't mean she lost the thread.
+            var textBeforeTools = new StringBuilder();
             var nudgeUsed = false;
             var verifyNudgeUsed = false;
             var reviewNudgeUsed = false;
             var claimCheckUsed = false;
+            // One fresh try per turn when her thinking loops (see RepetitionDetector); a second loop ends the turn.
+            var loopRetryUsed = false;
             var currentNudge = UnfinishedActionNudge;
             // The last turn's size seeds the estimate, so even this turn's first request is checked before it goes out.
             var previousRequestCharacters = conversation.LastContextTokens is null ? 0 : conversation.LastRequestCharacters;
@@ -288,6 +296,7 @@ public sealed partial class ChatLoop
                 var thinkingCharacters = 0;
                 var separateReasoningSeen = false;
                 var thinkingLimitHit = false;
+                var repetitionDetector = new RepetitionDetector();
 
                 var responseMessage = await lmStudioClient.StreamCompletionAsync(
                     requestMessages,
@@ -300,12 +309,20 @@ public sealed partial class ChatLoop
                             separateReasoningSeen = true;
                             thinkingCharacters += deltaText.Length;
                             await EmitAsync(onEvent, new ChatEvent("reasoning", deltaText));
+                            if (repetitionDetector.Feed(deltaText))
+                            {
+                                return false;
+                            }
                         }
                         else
                         {
                             if (!separateReasoningSeen && !thinkingFilter.ThinkingEnded)
                             {
                                 thinkingCharacters += deltaText.Length;
+                                if (repetitionDetector.Feed(deltaText))
+                                {
+                                    return false;
+                                }
                             }
 
                             foreach (var chatEvent in thinkingFilter.Feed(deltaText))
@@ -328,6 +345,22 @@ public sealed partial class ChatLoop
                         return true;
                     },
                     cancellationToken);
+
+                if (repetitionDetector.LoopDetected)
+                {
+                    // The same passage over and over: waiting for the thinking limit would only waste minutes. The step is
+                    // thrown away and asked again once (sampling gives a different start); a second loop ends the turn.
+                    if (!loopRetryUsed)
+                    {
+                        loopRetryUsed = true;
+                        logger.LogWarning("Chat {ConversationId}: her thinking looped after {Characters} characters; asking again", conversation.Id, thinkingCharacters);
+                        await EmitAsync(onEvent, new ChatEvent("reasoning", "\n\n[She was repeating the same thoughts, so this attempt was stopped and she starts over.]\n\n"));
+                        await EmitAsync(onEvent, new ChatEvent("status", "she was going in circles · starting over…"));
+                        continue;
+                    }
+
+                    throw new ThinkingLimitException("Stopped: her thinking kept repeating the same passage, twice. Ask again, more specifically, or check this model's sampling settings.");
+                }
 
                 if (thinkingLimitHit)
                 {
@@ -363,6 +396,7 @@ public sealed partial class ChatLoop
                 var toolCalls = responseMessage["tool_calls"] as JsonArray;
                 if (offerTools && toolCalls is not null && toolCalls.Count > 0)
                 {
+                    textBeforeTools.Append(JoinParts(announcedAction, answer));
                     conversation.Messages.Add(new JsonObject
                     {
                         ["role"] = "assistant",
@@ -422,7 +456,9 @@ public sealed partial class ChatLoop
 
                 // "Let me look that up." with no tool call: one nudge per turn to either do it or answer properly.
                 // An empty answer after tool calls means she lost the thread mid-task; same one nudge.
-                var stoppedSilently = (answer.Trim().Length == 0 && toolSteps.Count > 0) || LeakedToolCallPattern().IsMatch(answer);
+                // Text before the tools only counts when it's a real answer: a short "Let me check…" isn't one.
+                var answeredBeforeTools = IsSubstantialAnswer(textBeforeTools.ToString().Trim());
+                var stoppedSilently = (answer.Trim().Length == 0 && toolSteps.Count > 0 && !answeredBeforeTools) || LeakedToolCallPattern().IsMatch(answer);
                 if (offerTools && !nudgeUsed && (stoppedSilently || LooksLikeUnfinishedAction(answer)))
                 {
                     nudgeUsed = true;
@@ -451,9 +487,19 @@ public sealed partial class ChatLoop
                     continue;
                 }
 
+                // The extra passes after her answer (Little Handy's code review and fact check, the answer check) each cost
+                // minutes plus a re-read of the chat, so the chat's review mode decides whether this turn gets them.
+                // The mode is read here, not at the start, so switching it during a turn applies to that turn.
+                var reviewMode = conversation.ReviewMode ?? reviewDefaults.Mode;
+                var reviewDecision = ReviewDecider.Decide(reviewMode, toolSteps, JoinParts(textBeforeTools.ToString(), JoinParts(announcedAction, answer)));
+                if (reviewMode == ReviewModes.Auto)
+                {
+                    logger.LogInformation("Chat {ConversationId}: review {Decision} ({Reason})", conversation.Id, reviewDecision.Review ? "runs" : "skipped", reviewDecision.Reason);
+                }
+
                 // Code changed that Little Handy hasn't looked at: one nudge per turn to have him review it before she calls it done.
                 var unreviewedCodeFiles = GetUnreviewedCodeFiles(toolSteps);
-                if (offerTools && !reviewNudgeUsed && thinkingLevel != ThinkingLevel.Off && unreviewedCodeFiles.Count > 0)
+                if (offerTools && !reviewNudgeUsed && reviewDecision.Review && thinkingLevel != ThinkingLevel.Off && unreviewedCodeFiles.Count > 0)
                 {
                     reviewNudgeUsed = true;
                     currentNudge = string.Format(CultureInfo.InvariantCulture, ReviewNudgeTemplate, string.Join(", ", unreviewedCodeFiles));
@@ -467,7 +513,7 @@ public sealed partial class ChatLoop
                 // A substantial answer gets its facts checked by Little Handy before Shapto sees it (once per turn).
                 // If he finds something wrong or unverified, the draft moves into the trail and she rewrites it with his report.
                 var draftAnswer = JoinParts(announcedAction, answer);
-                if (offerTools && !claimCheckUsed && littleHandyTool is not null && !ToolContext.IsTestRun && thinkingLevel is ThinkingLevel.Full or ThinkingLevel.Code && IsSubstantialAnswer(draftAnswer))
+                if (offerTools && !claimCheckUsed && reviewDecision.Review && littleHandyTool is not null && !ToolContext.IsTestRun && thinkingLevel is ThinkingLevel.Full or ThinkingLevel.Code && IsSubstantialAnswer(draftAnswer))
                 {
                     claimCheckUsed = true;
                     await EmitAsync(onEvent, new ChatEvent("status", "little handy: checking her facts…"));
@@ -488,7 +534,7 @@ public sealed partial class ChatLoop
 
                 var finalAnswer = JoinParts(announcedAction, answer);
                 var finalReasoning = JoinParts(announcedReasoning, reasoning);
-                if (toolSteps.Count > 0 && thinkingLevel != ThinkingLevel.Off && finalAnswer.Trim().Length > 0)
+                if (toolSteps.Count > 0 && reviewDecision.Review && thinkingLevel != ThinkingLevel.Off && finalAnswer.Trim().Length > 0)
                 {
                     await EmitAsync(onEvent, new ChatEvent("status", "checking her answer…"));
                     var correctedAnswer = await ReviewAnswerAsync(systemPrompt, conversation, currentTurnStartIndex, finalAnswer, cancellationToken);

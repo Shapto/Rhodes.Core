@@ -2,7 +2,9 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Rhodes.Core.Engines;
+using Rhodes.Core.Tools;
 
 namespace Rhodes.Core.Chat;
 
@@ -21,6 +23,13 @@ public sealed class LmStudioClient
     private readonly ILogger<LmStudioClient> logger;
 
     private const int MinimumTokensForSpeed = 16;
+
+    // How often RustingStrata's log is checked for its prompt progress (it writes a line about every 2 s).
+    private static readonly TimeSpan StrataProgressInterval = TimeSpan.FromSeconds(1);
+
+    // RustingStrata's progress lines: "[12:03:41] prefill: 850.2 tok/s, 12000 tok" and "decode: 31.0 tok/s, 400 tok".
+    private static readonly Regex StrataPrefillPattern = new(@"prefill: ([0-9.]+) tok/s, ([0-9]+) tok");
+    private static readonly Regex StrataDecodePattern = new(@"decode: ([0-9.]+) tok/s");
 
     private const int LightThinkingBudget = 1000;
     private const int FullThinkingBudget = 4000;
@@ -112,12 +121,14 @@ public sealed class LmStudioClient
         {
             requestBody["tools"] = toolDefinitions;
         }
-        var sampling = thinkingLevel switch
+        // A model that sets its own sampling (rhodes.* in strata-models.ini) gets exactly that at every thinking level;
+        // the presets are Qwen's recommendations and can push other models into loops (low temperature, no penalties).
+        var sampling = modelManager.SamplingOverride ?? (thinkingLevel switch
         {
             ThinkingLevel.Off => InstantSampling,
             ThinkingLevel.Code => CodeSampling,
             _ => ThinkingSampling,
-        };
+        });
         foreach (var (settingName, settingValue) in sampling)
         {
             requestBody[settingName] = settingValue;
@@ -146,11 +157,38 @@ public sealed class LmStudioClient
                 requestBody["reasoning_budget_message"] = ThinkingBudgetMessage;
             }
         }
+        // While the prompt is read nothing streams, so the chat page would only say "waiting…". Both engines can tell
+        // how far along they are: llama-server in the stream itself (return_progress), RustingStrata in its log.
+        var emitEvent = ToolContext.EmitEvent;
+        var isStrata = engineManager.IsStrata;
+        if (emitEvent is not null && !isStrata)
+        {
+            requestBody["return_progress"] = true;
+        }
+
+        using var progressStop = new CancellationTokenSource();
+        var strataProgressTask = emitEvent is not null && isStrata && engineManager.CurrentEngine is { } strataEngine
+            ? ReportStrataProgressAsync(strataEngine.LogPath, emitEvent, progressStop.Token)
+            : Task.CompletedTask;
+
         var stopwatch = Stopwatch.StartNew();
         using var request = new HttpRequestMessage(HttpMethod.Post, engineManager.BaseUrl + "/chat/completions")
         {
             Content = new StringContent(requestBody.ToJsonString(), Encoding.UTF8, "application/json"),
         };
+        try
+        {
+            return await ReadCompletionAsync(request, stopwatch, onDelta, emitEvent, progressStop, cancellationToken);
+        }
+        finally
+        {
+            await progressStop.CancelAsync();
+            await strataProgressTask;
+        }
+    }
+
+    private async Task<JsonObject> ReadCompletionAsync(HttpRequestMessage request, Stopwatch stopwatch, Func<string, string, Task<bool>> onDelta, Func<ChatEvent, Task>? emitEvent, CancellationTokenSource progressStop, CancellationToken cancellationToken)
+    {
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -185,6 +223,11 @@ public sealed class LmStudioClient
             var chunk = JsonNode.Parse(payload);
             usage = chunk?["usage"] ?? usage;
             timings = chunk?["timings"] ?? timings;
+            if (chunk?["prompt_progress"] is JsonObject promptProgress && emitEvent is not null && firstTokenSeconds is null)
+            {
+                await EmitSafelyAsync(emitEvent, DescribeLlamaProgress(promptProgress));
+            }
+
             var choices = chunk?["choices"] as JsonArray;
             var delta = choices is { Count: > 0 } ? choices[0]?["delta"] : null;
             if (delta is null)
@@ -192,7 +235,12 @@ public sealed class LmStudioClient
                 continue;
             }
 
-            firstTokenSeconds ??= stopwatch.Elapsed.TotalSeconds;
+            if (firstTokenSeconds is null)
+            {
+                firstTokenSeconds = stopwatch.Elapsed.TotalSeconds;
+                // The model is writing now: the page's thinking/writing status takes over from the prompt progress.
+                await progressStop.CancelAsync();
+            }
 
             var reasoningText = GetString(delta["reasoning_content"]) ?? GetString(delta["reasoning"]);
             if (!string.IsNullOrEmpty(reasoningText))
@@ -231,6 +279,78 @@ public sealed class LmStudioClient
         message["rhodes_cached_tokens"] = usage?["prompt_tokens_details"]?["cached_tokens"]?.DeepClone();
         message["rhodes_tokens_per_second"] = tokensPerSecond;
         return message;
+    }
+
+    /// <summary>
+    /// llama-server's prompt_progress: total prompt tokens, how many came from the cache, how many are done so far.
+    /// </summary>
+    private static string DescribeLlamaProgress(JsonObject promptProgress)
+    {
+        var totalTokens = GetDouble(promptProgress["total"]) ?? 0;
+        var cachedTokens = GetDouble(promptProgress["cache"]) ?? 0;
+        var processedTokens = GetDouble(promptProgress["processed"]) ?? 0;
+        var elapsedMilliseconds = GetDouble(promptProgress["time_ms"]) ?? 0;
+        var newTokens = Math.Max(0, totalTokens - cachedTokens);
+        var doneTokens = Math.Clamp(processedTokens - cachedTokens, 0, newTokens);
+        var speedText = elapsedMilliseconds > 0 && doneTokens > 0 ? $" at {doneTokens / (elapsedMilliseconds / 1000):0} tok/s" : "";
+        var cachedText = cachedTokens > 0 ? $" ({cachedTokens:N0} cached)" : "";
+        return $"reading the prompt · {doneTokens:N0} / {newTokens:N0} tok{speedText}{cachedText}";
+    }
+
+    /// <summary>
+    /// Follows RustingStrata's log until the first token: its prefill lines say how much of the prompt it has read.
+    /// Only lines written after the request started count, so the end of the previous request isn't mistaken for this one.
+    /// </summary>
+    private static async Task ReportStrataProgressAsync(string logPath, Func<ChatEvent, Task> emitEvent, CancellationToken stopToken)
+    {
+        var startingLine = EngineManager.ReadLastLogLine(logPath);
+        string? reportedLine = null;
+        try
+        {
+            while (!stopToken.IsCancellationRequested)
+            {
+                await Task.Delay(StrataProgressInterval, stopToken);
+                var lastLine = EngineManager.ReadLastLogLine(logPath);
+                if (lastLine is null || lastLine == startingLine || lastLine == reportedLine)
+                {
+                    continue;
+                }
+
+                reportedLine = lastLine;
+                if (StrataPrefillPattern.Match(lastLine) is { Success: true } prefillMatch)
+                {
+                    var tokensRead = long.Parse(prefillMatch.Groups[2].Value);
+                    var tokensPerSecond = double.Parse(prefillMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+                    await EmitSafelyAsync(emitEvent, $"reading the prompt · {tokensRead:N0} tok at {tokensPerSecond:0} tok/s");
+                }
+                else if (StrataDecodePattern.IsMatch(lastLine))
+                {
+                    // Writing before this request's first token: RustingStrata is still answering an earlier request
+                    // (a side request like the answer check or titling), and this one waits its turn.
+                    await EmitSafelyAsync(emitEvent, "waiting for the model · it's finishing another request");
+                }
+                else if (lastLine.Contains("request:", StringComparison.Ordinal))
+                {
+                    await EmitSafelyAsync(emitEvent, "the model took the request · reading the prompt…");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The first token arrived or the request ended.
+        }
+    }
+
+    private static async Task EmitSafelyAsync(Func<ChatEvent, Task> emitEvent, string statusText)
+    {
+        try
+        {
+            await emitEvent(new ChatEvent("status", statusText));
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException or OperationCanceledException)
+        {
+            // The page went away; the turn goes on without it.
+        }
     }
 
     /// <summary>

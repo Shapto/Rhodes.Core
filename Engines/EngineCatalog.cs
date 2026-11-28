@@ -78,7 +78,7 @@ public sealed record EngineDefinition(
 /// <summary>
 /// One model RustingStrata can serve, from its models file: the GGUF and the flags it's started with.
 /// </summary>
-public sealed record StrataModel(string Id, string ModelPath, IReadOnlyList<KeyValuePair<string, string>> Arguments, IReadOnlyDictionary<string, string> Environment, int? ContextTokens, bool HasVision)
+public sealed record StrataModel(string Id, string ModelPath, IReadOnlyList<KeyValuePair<string, string>> Arguments, IReadOnlyDictionary<string, string> Environment, int? ContextTokens, bool HasVision, IReadOnlyDictionary<string, double> Sampling)
 {
     public bool FileExists => File.Exists(ModelPath);
 
@@ -99,6 +99,17 @@ public sealed class EngineCatalog
 {
     public const string EnginesFileName = "engines.ini";
     public const string StrataModelsFileName = "strata-models.ini";
+
+    // rhodes.<key> in a model's section sets that sampling value in Closure's requests (the request field it becomes).
+    private static readonly Dictionary<string, string> SamplingKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["temperature"] = "temperature",
+        ["top-p"] = "top_p",
+        ["top-k"] = "top_k",
+        ["min-p"] = "min_p",
+        ["presence-penalty"] = "presence_penalty",
+        ["repeat-penalty"] = "repeat_penalty",
+    };
 
     // Keys of a strata-models.ini section that Rhodes handles itself instead of passing on as --flags.
     private static readonly HashSet<string> ReservedModelKeys = new(StringComparer.OrdinalIgnoreCase) { "model" };
@@ -198,9 +209,22 @@ public sealed class EngineCatalog
 
                     var arguments = new List<KeyValuePair<string, string>>();
                     var environment = new Dictionary<string, string>();
+                    var sampling = new Dictionary<string, double>();
                     foreach (var (settingKey, settingValue) in modelSection.Values)
                     {
-                        if (settingKey.StartsWith("env.", StringComparison.OrdinalIgnoreCase))
+                        if (settingKey.StartsWith("rhodes.", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Settings for Rhodes itself, not flags for the server: the sampling Closure's requests use.
+                            if (SamplingKeys.TryGetValue(settingKey[7..], out var requestField) && double.TryParse(settingValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var samplingValue))
+                            {
+                                sampling[requestField] = samplingValue;
+                            }
+                            else
+                            {
+                                problems.Add($"[{modelSection.Name}] has {settingKey} = {settingValue}, which Rhodes doesn't know (sampling keys: {string.Join(", ", SamplingKeys.Keys.Select(key => "rhodes." + key))})");
+                            }
+                        }
+                        else if (settingKey.StartsWith("env.", StringComparison.OrdinalIgnoreCase))
                         {
                             environment[settingKey[4..]] = ExpandRoot(settingValue);
                         }
@@ -216,7 +240,8 @@ public sealed class EngineCatalog
                         arguments,
                         environment,
                         int.TryParse(modelSection.Get("ctx"), out var modelContextTokens) && modelContextTokens > 0 ? modelContextTokens : null,
-                        modelSection.Get("mmproj") is { Length: > 0 }));
+                        modelSection.Get("mmproj") is { Length: > 0 },
+                        sampling));
                 }
             }
         }

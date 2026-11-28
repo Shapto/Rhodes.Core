@@ -110,6 +110,9 @@ if (rhodesDataFolder is null)
 var localSettingsFile = new Rhodes.Core.Settings.LocalSettingsFile(localSettingsPath);
 builder.Services.AddSingleton(localSettingsFile);
 
+// The review mode new chats start with (the extra passes after her answer; see ReviewModes). Each chat can pick its own.
+builder.Services.AddSingleton(new ReviewDefaults(builder.Configuration[ReviewModes.SettingKey]));
+
 // The model engines (llama.cpp, RustingStrata) from Data/engines.ini: which one runs, and starting and stopping its
 // server. The first engines.ini takes llama.cpp's address from the old LmStudio:BaseUrl setting.
 builder.Services.AddSingleton(new Rhodes.Core.Engines.EngineCatalog(rhodesDataFolder ?? dataFolder, builder.Configuration["LmStudio:BaseUrl"]));
@@ -132,6 +135,7 @@ builder.Services.AddSingleton(serviceProvider => new Rhodes.Core.Settings.CoreSe
     localSettingsFile,
     builder.Configuration,
     serviceProvider.GetRequiredService<ModelManager>(),
+    serviceProvider.GetRequiredService<ReviewDefaults>(),
     serviceProvider.GetRequiredService<ILogger<Rhodes.Core.Settings.CoreSettings>>()));
 
 builder.Services.AddSingleton(serviceProvider => new LmStudioClient(
@@ -164,6 +168,7 @@ builder.Services.AddSingleton(serviceProvider => new ChatLoop(
     personaPath,
     builder.Configuration.GetValue("Chat:MaximumThinkingCharacters", 24000),
     serviceProvider.GetRequiredService<ModelManager>(),
+    serviceProvider.GetRequiredService<ReviewDefaults>(),
     serviceProvider.GetRequiredService<ILogger<ChatLoop>>()));
 
 builder.Services.AddSingleton<ChatTitler>();
@@ -386,6 +391,8 @@ app.MapPost("/chat", async (ChatRequest chatRequest, ChatLoop chatLoop, Conversa
         return Results.NotFound("That chat doesn't exist.");
     }
 
+    ApplyRequestedReviewMode(conversation, chatRequest, conversationStore);
+
     var turnResult = await chatLoop.RunTurnAsync(conversation, chatRequest.Message, chatRequest.AttachmentIds ?? [], chatRequest.Client ?? "test console", chatRequest.Thinking ?? "auto", null, cancellationToken);
     // The model title comes later, once I'm quiet (ChatTitlingService), so it doesn't wipe the cache mid-chat.
     _ = Task.Run(async () => await conversationCompactor.CompactIfNeededAsync(conversation, null, CancellationToken.None));
@@ -430,6 +437,8 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
         await SendAsync(new { type = "error", text = "That chat doesn't exist anymore. Start a new one." });
         return;
     }
+
+    ApplyRequestedReviewMode(conversation, chatRequest, conversationStore);
 
     using var runningTurn = runningTurns.Begin(conversation.Id, applicationLifetime.ApplicationStopping);
     var turnToken = runningTurn.Token;
@@ -491,6 +500,27 @@ app.MapPost("/chat/stream", async (ChatRequest chatRequest, ChatLoop chatLoop, C
 
     // SendAsync already ignores a page that's gone; kept so the compaction calls read the same as before.
     Task TrySendAsync(object payload) => SendAsync(payload);
+});
+
+// The REVIEW buttons in the chat bar: the dashboard default for new chats, and saving a chat's own choice.
+app.MapGet("/review/default", (ReviewDefaults reviewDefaults) => Results.Ok(new { reviewDefaults.Mode }));
+app.MapPost("/chats/{conversationId}/review", (string conversationId, ReviewChoice reviewChoice, ConversationManager conversationManager, ConversationStore conversationStore) =>
+{
+    var conversation = conversationManager.Get(conversationId);
+    if (conversation is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (ReviewModes.Parse(reviewChoice.Mode) is not { } reviewMode)
+    {
+        return Results.BadRequest("The review mode has to be off, auto or on.");
+    }
+
+    // Takes effect at the next decision point, also in a turn that's running right now.
+    conversation.ReviewMode = reviewMode;
+    conversationStore.SaveReviewMode(conversation);
+    return Results.Ok();
 });
 
 // The Stop button: cancels the chat's running turn (it's rolled back). Leaving the page doesn't, so the turn finishes on its own.
@@ -702,6 +732,16 @@ app.Run();
 /// <summary>
 /// The first folder named Data with a memory.db in it, looking next to the starting folder and then next to each parent.
 /// </summary>
+// A new chat's first message carries the REVIEW mode picked before the chat existed; it's saved with the chat.
+static void ApplyRequestedReviewMode(Conversation conversation, ChatRequest chatRequest, ConversationStore conversationStore)
+{
+    if (ReviewModes.Parse(chatRequest.Review) is { } requestedMode && requestedMode != conversation.ReviewMode)
+    {
+        conversation.ReviewMode = requestedMode;
+        conversationStore.SaveReviewMode(conversation);
+    }
+}
+
 static string? FindDataFolder(string startFolder)
 {
     for (var folder = new DirectoryInfo(startFolder); folder is not null; folder = folder.Parent)

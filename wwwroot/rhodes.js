@@ -31,6 +31,11 @@ const highlightingAvailable = typeof window.hljs !== 'undefined';
 
 let currentConversationId = readStoredConversationId();
 let thinkingSetting = 'auto';
+// The chat's review mode (off, auto, on). New chats start from the dashboard default; a chat that picked its own keeps it.
+let reviewDefault = 'auto';
+let reviewSetting = 'auto';
+// True when the mode was picked by hand for a chat that doesn't exist yet: the first message saves it with the chat.
+let reviewPickedForNewChat = false;
 let activeTurnController = null;
 // The chat the running turn belongs to (known once the core sends its id), and whether Stop was pressed before that.
 let activeTurnConversationId = null;
@@ -314,12 +319,20 @@ function addToolStep(closureMessage, toolName, argumentsText, resultText) {
     updateWorkedSummary(closureMessage);
 }
 
-// Text she wrote before a tool call, kept in the trail in order with the calls.
-function addInterimNote(closureMessage, noteText) {
-    if (!noteText || !noteText.trim()) return;
-    addElement(closureMessage.workedDetails, 'div', 'interim-note', noteText.trim());
-    closureMessage.noteCount = (closureMessage.noteCount || 0) + 1;
-    updateWorkedSummary(closureMessage);
+// A small, collapsed line in her reply where she used tools between two parts of it ("⋯ 3 tools"),
+// so the reply reads in order. The full calls and results stay in the worked trail above.
+// Calls in a row share one line; text she writes afterwards starts a new part of the reply below it.
+function addToolMarker(closureMessage, toolName, beforeElement) {
+    if (!closureMessage.openToolMarker) {
+        const markerElement = beforeElement ? createElementBefore(beforeElement, 'details', 'tool-marker') : addElement(closureMessage.bodyElement, 'details', 'tool-marker');
+        const summaryElement = addElement(markerElement, 'summary', 'mono');
+        const listElement = addElement(markerElement, 'div', 'tool-marker-list mono');
+        closureMessage.openToolMarker = { summaryElement, listElement, count: 0 };
+    }
+    const toolMarker = closureMessage.openToolMarker;
+    toolMarker.count++;
+    toolMarker.summaryElement.textContent = '⋯ ' + toolMarker.count + (toolMarker.count === 1 ? ' tool' : ' tools');
+    addElement(toolMarker.listElement, 'div', null, toolName);
 }
 
 function addMemoryChip(closureMessage, memoryLine) {
@@ -627,6 +640,8 @@ function startNewChat() {
     if (activeTurnController || compactionInProgress) return;
     storeConversationId(null);
     stopEditingLastMessage(false);
+    reviewPickedForNewChat = false;
+    showReviewSetting(reviewDefault);
     messagesElement.replaceChildren();
     showTitle(null);
     showContext(null, null, null);
@@ -669,18 +684,22 @@ function buildConversationView(conversationView) {
         }
         if (!closureMessage) closureMessage = createClosureMessage(newMessagesContainer, isSummarized);
         if (displayMessage.role === 'tool') {
-            addToolStep(closureMessage, displayMessage.toolName || 'tool', '', displayMessage.text.length > 300 ? displayMessage.text.slice(0, 300) + '…' : displayMessage.text);
+            const toolName = displayMessage.toolName || 'tool';
+            addToolStep(closureMessage, toolName, '', displayMessage.text.length > 300 ? displayMessage.text.slice(0, 300) + '…' : displayMessage.text);
+            if (!toolName.startsWith('handy · ')) addToolMarker(closureMessage, toolName, null);
         } else if (displayMessage.role === 'assistant') {
             if (displayMessage.reasoning) {
                 closureMessage.thinkingText.textContent += (closureMessage.thinkingText.textContent ? '\n\n' : '') + displayMessage.reasoning;
                 updateWorkedSummary(closureMessage);
             }
-            // Text followed by a tool result was written before a tool call: it belongs in the trail, like it did while streaming.
-            const isInterimText = nextMessage && nextMessage.role === 'tool';
-            if (displayMessage.text && isInterimText) addInterimNote(closureMessage, displayMessage.text);
-            else if (displayMessage.text) {
+            // Everything she writes as text is part of her reply, also what she wrote before a tool call:
+            // each step's text is shown in order, with the tool calls between them collapsed. Only the last part gets
+            // the PIN button (it's the message that's kept word for word when pinned).
+            const isTextBeforeTools = nextMessage && nextMessage.role === 'tool';
+            if (displayMessage.text) {
                 createAnswer(closureMessage.bodyElement, null, displayMessage.text);
-                addPinButton(closureMessage.messageElement, conversationView.id, displayMessage.index, displayMessage.pinned);
+                closureMessage.openToolMarker = null;
+                if (!isTextBeforeTools) addPinButton(closureMessage.messageElement, conversationView.id, displayMessage.index, displayMessage.pinned);
             }
             if (displayMessage.questions) {
                 const isAnswered = conversationView.messages.slice(messagePosition + 1).some(laterMessage => laterMessage.role === 'user');
@@ -708,6 +727,8 @@ async function loadConversation(conversationId) {
     }
     const { newMessagesContainer, lastStatistics } = buildConversationView(conversationView);
     messagesElement.replaceChildren(...newMessagesContainer.childNodes);
+    reviewPickedForNewChat = false;
+    showReviewSetting(conversationView.reviewMode);
     showTitle(conversationView.title);
     showContext(conversationView.contextTokens, conversationView.contextLimit, conversationView.contextSplit);
     showReplyStatistics(lastStatistics);
@@ -929,8 +950,12 @@ async function sendMessage(messageText, attachmentsToSend, options) {
     updateFormState();
     scrollToBottom();
 
+    // Her reply can come in parts, one per step, with tool calls between them; this is the part being written now.
     function currentAnswer() {
-        if (!answer) answer = createAnswer(closureMessage.bodyElement, statusLine, '');
+        if (!answer) {
+            answer = createAnswer(closureMessage.bodyElement, statusLine, '');
+            closureMessage.openToolMarker = null;
+        }
         return answer;
     }
 
@@ -950,7 +975,11 @@ async function sendMessage(messageText, attachmentsToSend, options) {
             case 'conversation':
                 turnConversationId = chatEvent.text;
                 if (activeTurnController === turnController) activeTurnConversationId = chatEvent.text;
-                if (!currentConversationId) storeConversationId(chatEvent.text);
+                if (!currentConversationId) {
+                    storeConversationId(chatEvent.text);
+                    // The chat exists now and saved the picked mode with it; later picks go straight to the chat.
+                    reviewPickedForNewChat = false;
+                }
                 if (stopRequestedEarly && activeTurnController === turnController) {
                     stopRequestedEarly = false;
                     requestStop(chatEvent.text);
@@ -1013,13 +1042,17 @@ async function sendMessage(messageText, attachmentsToSend, options) {
                 }
                 break;
             case 'tool':
-                // What she wrote before this call was her thinking out loud; it moves into the trail so only the final answer stays visible.
-                // Little Handy's own steps ("handy · …") don't count: his fact check runs after her answer is written,
-                // and moving it then left the message with no answer (the server only says moveToReasoning when she rewrites it).
-                if (answer && !String(chatEvent.toolName || '').startsWith('handy · ')) {
-                    addInterimNote(closureMessage, answer.rawText);
-                    answer.element.remove();
-                    answer = null;
+                // What she wrote before this call stays in her reply: it's answer text like any other (some models answer
+                // part of a question, use tools, then answer the rest). The part is finished; a collapsed tool line follows
+                // it, and whatever she writes next starts a new part below. Only reasoning goes in the THOUGHT trail.
+                // Little Handy's own steps ("handy · …") don't split the reply: his fact check runs after her answer is written.
+                if (!String(chatEvent.toolName || '').startsWith('handy · ')) {
+                    if (answer) {
+                        if (answer.rawText.trim()) renderAnswer(answer);
+                        else answer.element.remove();
+                        answer = null;
+                    }
+                    addToolMarker(closureMessage, chatEvent.toolName, statusLine);
                 }
                 addToolStep(closureMessage, chatEvent.toolName, chatEvent.text, chatEvent.result);
                 addTurnTool(chatEvent.toolName);
@@ -1076,6 +1109,7 @@ async function sendMessage(messageText, attachmentsToSend, options) {
                 message: regenerate ? (options.editedText || '') : messageText,
                 client: 'test page',
                 thinking: thinkingSetting,
+                review: currentConversationId || !reviewPickedForNewChat ? null : reviewSetting,
                 conversationId: currentConversationId,
                 attachmentIds: regenerate ? [] : attachmentIds,
                 regenerate: Boolean(regenerate),
@@ -1207,6 +1241,43 @@ document.addEventListener('keydown', keyEvent => {
         startNewChat();
     }
 });
+
+function showReviewSetting(modeText) {
+    reviewSetting = ['off', 'auto', 'on'].includes(modeText) ? modeText : reviewDefault;
+    document.querySelectorAll('.review-option').forEach(optionButton => optionButton.setAttribute('aria-checked', String(optionButton.dataset.value === reviewSetting)));
+}
+
+// The dashboard default, for new chats and chats that never picked their own.
+async function loadReviewDefault() {
+    try {
+        const response = await fetch('/review/default', { cache: 'no-store' });
+        if (response.ok) reviewDefault = (await response.json()).mode || 'auto';
+    } catch { }
+    if (!currentConversationId) showReviewSetting(reviewDefault);
+}
+
+document.querySelectorAll('.review-option').forEach(optionButton => {
+    optionButton.addEventListener('click', async () => {
+        const previousSetting = reviewSetting;
+        showReviewSetting(optionButton.dataset.value);
+        if (!currentConversationId) {
+            reviewPickedForNewChat = true;
+            return;
+        }
+        try {
+            const response = await fetch('/chats/' + currentConversationId + '/review', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: reviewSetting }),
+            });
+            if (!response.ok) throw new Error(await readErrorText(response));
+        } catch (error) {
+            showReviewSetting(previousSetting);
+            await showNotice('REVIEW', error.message);
+        }
+    });
+});
+loadReviewDefault();
 
 document.querySelectorAll('.think-option').forEach(optionButton => {
     optionButton.addEventListener('click', () => {

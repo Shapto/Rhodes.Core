@@ -111,6 +111,12 @@ public sealed class ModelManager
     /// The name sent as "model" with every request: the router preset on llama.cpp, and on RustingStrata the loaded
     /// file's name, which keeps RustingStrata from swapping to another file in its folder.
     /// </summary>
+    /// <summary>
+    /// The current model's own sampling (rhodes.temperature and friends in its strata-models.ini section), or null:
+    /// then Closure's requests use the built-in presets, which are Qwen's recommendations.
+    /// </summary>
+    public IReadOnlyDictionary<string, double>? SamplingOverride => engineManager.IsStrata && engineManager.CurrentStrataModel?.Sampling is { Count: > 0 } modelSampling ? modelSampling : null;
+
     public string RequestModelName => engineManager.IsStrata ? engineManager.CurrentStrataModel?.ServedName ?? "" : CurrentModel;
 
     /// <summary>
