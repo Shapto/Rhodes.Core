@@ -340,7 +340,9 @@ public sealed class EngineManager : IHostedService
             return false;
         }
 
-        var namePattern = new Regex("^strata-" + Regex.Escape(strataModel.ServedName) + @"(-(vulkan|hip|cuda))?(-dev[0-9-]+)?\.json$", RegexOptions.IgnoreCase);
+        // Named after the GGUF file, not the alias: RustingStrata keeps calibrations per file.
+        var modelFileName = Path.GetFileNameWithoutExtension(strataModel.ModelPath);
+        var namePattern = new Regex("^strata-" + Regex.Escape(modelFileName) + @"(-(vulkan|hip|cuda))?(-dev[0-9-]+)?\.json$", RegexOptions.IgnoreCase);
         return Directory.EnumerateFiles(cacheFolder, "strata-*.json").Any(filePath => namePattern.IsMatch(Path.GetFileName(filePath)));
     }
 
